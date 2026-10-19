@@ -282,6 +282,10 @@ def grab_screen(x: int, y: int, w: int, h: int, below_window: int = 0):
             im = platform_mac.capture(x, y, w, h, below_window)
             if im is not None:
                 return im
+    if sys.platform.startswith("linux"):
+        from . import platform_wayland
+        if platform_wayland.is_wayland():
+            return platform_wayland.capture(x, y, w, h)
     from PySide6.QtCore import QPoint
     from PySide6.QtGui import QGuiApplication
     scr = QGuiApplication.screenAt(QPoint(x + w // 2, y + h // 2)) or QGuiApplication.primaryScreen()

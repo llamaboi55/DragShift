@@ -143,7 +143,8 @@ AUTOSTART = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") /
 def _exec() -> str:
     if getattr(sys, "frozen", False):
         return f'"{sys.executable}" --quiet'
-    return f'"{sys.executable}" -m dragshift --quiet'
+    src = Path(__file__).resolve().parent.parent   # running from a checkout: make -m find it
+    return f'env PYTHONPATH="{src}" "{sys.executable}" -m dragshift --quiet'
 
 
 def autostart_enabled() -> bool:

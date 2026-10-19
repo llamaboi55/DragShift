@@ -16,7 +16,7 @@ from PySide6.QtGui import (QColor, QCursor, QFont, QGuiApplication, QImage, QPai
                            QPainterPath, QPen, QPixmap, QRadialGradient)
 from PySide6.QtWidgets import QWidget
 
-from . import glass
+from . import glass, platform_wayland
 
 
 @dataclass
@@ -86,6 +86,44 @@ class _RenderJob(QRunnable):
             traceback.print_exc()
 
 
+class _Catcher(QWidget):
+    """Wayland: a transparent full-screen layer surface. Apps can't ask where the cursor is,
+    but a drag entering this surface reports its position, so the menu can open right there.
+    In click mode it sits behind the menu and dismisses it on an outside click."""
+
+    def __init__(self, menu: "RadialMenu", screen):
+        super().__init__(None)
+        self.menu = menu
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool | Qt.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setAcceptDrops(True)
+        self.resize(screen.geometry().size())
+        self.layer = platform_wayland.Layer(self, layer=platform_wayland.LAYER_TOP,
+                                            anchors=platform_wayland.ANCHOR_ALL)
+        self.layer.place(screen)
+
+    def paintEvent(self, e):
+        pass  # fully transparent; the surface still receives input
+
+    def dragEnterEvent(self, e):
+        paths = RadialMenu._local_paths(e.mimeData())
+        if not paths:
+            e.ignore()
+            return
+        e.setDropAction(Qt.CopyAction)
+        e.accept()
+        g = self.windowHandle().screen().geometry()
+        self.menu._caught(e.position().toPoint() + g.topLeft(), self.windowHandle().screen(), paths)
+
+    def dropEvent(self, e):
+        e.ignore()
+        self.menu.close_menu()
+
+    def mousePressEvent(self, e):
+        self.menu.close_menu()
+
+
 class RadialMenu(QWidget):
     activated = Signal(object, list)     # Item, paths
     dismissed = Signal()
@@ -132,11 +170,60 @@ class RadialMenu(QWidget):
         self.hub_timer = QTimer(self, singleShot=True, interval=420, timeout=self.next_ring)
         self.frame = QTimer(self, interval=16, timeout=self._tick)   # 60 fps springs
 
+        # Wayland: the menu is a layer surface placed by margins; catchers find the cursor
+        self.layer = platform_wayland.make_layer(self) if sys.platform.startswith("linux") else None
+        self.catchers: dict[str, _Catcher] = {}
+        self.catching = False
+
+    def active(self) -> bool:
+        """Open in drag mode (or waiting for the drag to reveal where the cursor is)."""
+        return (self.isVisible() or self.catching) and not self.click_mode
+
+    # ------------------------------------------------------------ wayland
+    def _catcher(self, screen) -> _Catcher:
+        c = self.catchers.get(screen.name())
+        if c is None or c.windowHandle().screen() is not screen:
+            if c is not None:
+                c.deleteLater()
+            c = self.catchers[screen.name()] = _Catcher(self, screen)
+        return c
+
+    def _catch(self):
+        """Drag mode on Wayland: cover every screen and wait for the drag to enter one."""
+        self.catching = True
+        self.click_mode = False
+        self.got_drag = False
+        for scr in QGuiApplication.screens():
+            self._catcher(scr).show()
+
+    def _hide_catchers(self):
+        self.catching = False
+        for c in self.catchers.values():
+            c.hide()
+
+    def _caught(self, pos: QPoint, screen, paths: list[str]):
+        if not self.catching:
+            return
+        print(f"menu: wayland drag entered {screen.name()} at {pos.x()},{pos.y()}", flush=True)
+        self._hide_catchers()
+        self._open(pos, None, screen)
+        self._load(paths)       # the drag's files are already known: show their rings now
+
     # ------------------------------------------------------------ show / hide
     def popup(self, pos: QPoint | None = None, paths: list[str] | None = None):
-        pos = pos or QCursor.pos()
+        if self.layer is not None:
+            if paths is None:
+                self._catch()
+                return
+            # no cursor position on Wayland: open in the middle of the active screen
+            scr = platform_wayland.focused_screen()
+            self._open(scr.geometry().center(), paths, scr)
+            return
+        self._open(pos or QCursor.pos(), paths)
+
+    def _open(self, pos: QPoint, paths: list[str] | None, scr=None):
         tl = pos - QPoint(SIZE // 2, SIZE // 2)
-        scr = QGuiApplication.screenAt(pos) or QGuiApplication.primaryScreen()
+        scr = scr or QGuiApplication.screenAt(pos) or QGuiApplication.primaryScreen()
         g = scr.geometry()
         tl.setX(min(max(tl.x(), g.left()), g.right() - SIZE))
         tl.setY(min(max(tl.y(), g.top()), g.bottom() - SIZE))
@@ -156,6 +243,15 @@ class RadialMenu(QWidget):
                     # cursor; erase that area — it ends up under the hub, blurred anyway
                     cx, cy = pos.x() - tl.x(), pos.y() - tl.y()
                     raw = glass.inpaint_rects(raw, [(cx - 70, cy - 64, cx + 70, cy + 64)])
+                shot = QPixmap.fromImage(glass.qimage_from_pil(raw))
+            elif self.layer is not None:
+                raw = platform_wayland.capture(tl.x(), tl.y(), SIZE, SIZE)
+                if raw is None:
+                    raise RuntimeError("capture failed")
+                if paths is None:
+                    # the compositor draws the drag icon at the cursor: erase that patch
+                    cx, cy = pos.x() - tl.x(), pos.y() - tl.y()
+                    raw = glass.inpaint_rects(raw, [(cx - 60, cy - 60, cx + 60, cy + 60)])
                 shot = QPixmap.fromImage(glass.qimage_from_pil(raw))
             else:
                 with glass.hidden_drag_images() as hid:
@@ -182,7 +278,12 @@ class RadialMenu(QWidget):
         except Exception:
             self.backdrop = None
             self._raw_backdrop = None
-        self.move(tl)
+        if self.layer is not None:
+            self.layer.keyboard(platform_wayland.KEYBOARD_EXCLUSIVE if paths is not None
+                                else platform_wayland.KEYBOARD_NONE)
+            self.layer.place(scr, tl.x(), tl.y())
+        else:
+            self.move(tl)
         self.hover = -1
         self.got_drag = False
         self.hub_armed = False  # drags start on the hub; don't flip until they leave it
@@ -202,10 +303,15 @@ class RadialMenu(QWidget):
         self.frame.start()
         if self.click_mode:
             # behave like a popup: a click anywhere outside dismisses it
-            QTimer.singleShot(0, self.grabMouse)
+            if self.layer is not None:
+                self._catcher(scr).show()   # layer TOP, under the menu's OVERLAY
+            else:
+                QTimer.singleShot(0, self.grabMouse)
 
     def close_menu(self):
-        if self.isVisible():
+        was_catching = self.catching
+        self._hide_catchers()
+        if self.isVisible() or was_catching:
             self.hide()
             self.frame.stop()
             self.hub_timer.stop()
@@ -213,6 +319,8 @@ class RadialMenu(QWidget):
 
     def hideEvent(self, e):
         self.frame.stop()
+        if self.click_mode:
+            self._hide_catchers()
         if QWidget.mouseGrabber() is self:
             self.releaseMouse()
         super().hideEvent(e)

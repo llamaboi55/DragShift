@@ -141,8 +141,7 @@ class DragShiftApp(QObject):
 
         # the watcher only manages menus it opened (drag mode); click-mode menus (tray, right-click,
         # Send To) must not be closed just because no mouse button is held
-        self.watcher = DragShiftWatcher(lambda: self.menu.isVisible() and not self.menu.click_mode,
-                                        lambda: self.menu.got_drag, self)
+        self.watcher = DragShiftWatcher(self.menu.active, lambda: self.menu.got_drag, self)
         self.watcher.set_key(self.settings.get("trigger"))
         self.watcher.show_menu.connect(lambda pos: self.menu.popup(pos))
         self.watcher.toggle_ring.connect(self.menu.next_ring)
@@ -454,6 +453,8 @@ def main(argv: list[str] | None = None) -> int:
         mac_setup(qapp)
     qapp.setApplicationName(APP_NAME)
     qapp.setApplicationVersion(VERSION)
+    if sys.platform.startswith("linux"):
+        qapp.setDesktopFileName("dragshift")   # Wayland app-id, for compositor window rules
     qapp.setQuitOnLastWindowClosed(False)
     qapp.setWindowIcon(make_icon())
 
