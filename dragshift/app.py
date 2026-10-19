@@ -26,6 +26,7 @@ TIP_URL = "https://cash.app/$AtikaKadesha"
 VERSION = __version__
 IS_WIN = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
+IS_LINUX = sys.platform.startswith("linux")
 from .handoff import ipc_name
 IPC_NAME = ipc_name()
 
@@ -413,13 +414,22 @@ def send_to_running(payload: dict) -> bool:
     return True
 
 
-def setup_logging():
-    """Errors go to %LOCALAPPDATA%\\DragShift\\log.txt (pythonw / the .exe have no console)."""
-    import faulthandler
+def log_dir() -> Path:
+    """Folder that holds log.txt: %LOCALAPPDATA%, ~/Library/Logs, or $XDG_STATE_HOME on Linux."""
     if IS_MAC:
-        base = Path.home() / "Library" / "Logs" / "DragShift"
-    else:
-        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / ".local" / "share") / "DragShift"
+        return Path.home() / "Library" / "Logs" / "DragShift"
+    if IS_LINUX:
+        state = os.environ.get("XDG_STATE_HOME", "")
+        # XDG spec: an unset, empty or relative value means the default.
+        base = Path(state) if os.path.isabs(state) else Path.home() / ".local" / "state"
+        return base / "DragShift"
+    return Path(os.environ.get("LOCALAPPDATA") or Path.home() / ".local" / "share") / "DragShift"
+
+
+def setup_logging():
+    """Errors go to log_dir()/log.txt (pythonw / the .exe have no console)."""
+    import faulthandler
+    base = log_dir()
     base.mkdir(parents=True, exist_ok=True)
     path = base / "log.txt"
     if path.exists() and path.stat().st_size > 1_000_000:

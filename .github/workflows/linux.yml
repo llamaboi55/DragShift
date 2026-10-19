@@ -1,0 +1,50 @@
+name: Linux
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
+  pull_request:
+    paths-ignore: ["**.md", "docs/**"]
+  workflow_dispatch:
+
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Package groups "Unit tests" and "Qt: offscreen platform" from docs/LINUX-DEV.md.
+      # A missing package must fail the job; keep this list in sync with that file.
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3-venv \
+            libgl1 libegl1 libfontconfig1 libfreetype6 libglib2.0-0t64 \
+            libdbus-1-3 libx11-6 libxkbcommon0 libgssapi-krb5-2
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+
+      - name: Run unit tests
+        run: python -m pytest -q
+        env:
+          QT_QPA_PLATFORM: offscreen
+
+      - name: Self-test
+        run: |
+          python -m dragshift --selftest
+          head -3 "$XDG_STATE_HOME/DragShift/log.txt"
+        env:
+          QT_QPA_PLATFORM: offscreen
+          XDG_STATE_HOME: ${{ runner.temp }}/xdg-state
