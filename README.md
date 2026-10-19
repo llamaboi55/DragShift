@@ -33,7 +33,7 @@ sudo apt install ./DragShift-linux-amd64.deb
 
 Open **DragShift** from the app menu. It sits in the panel's notification area, and you can turn on *Start at login* in Settings. It works in Thunar, Nautilus, Nemo, Caja, Dolphin and on the desktop, and it also adds **Open With → DragShift** to file right-click menus. It works with or without a compositor: when compositing is off (common on XFCE), the menu and windows are cut to their exact shape, so you won't see black boxes. Builds target Debian 12 or newer (Ubuntu 23.04+).
 
-> **Wayland:** Wayland doesn't let apps read the global Shift and mouse state, so the Shift + drag trigger only works in X11 sessions (XFCE is X11). On GNOME/KDE Wayland, use right-click → **Open With → DragShift**, or pick *"Ubuntu on Xorg"* / *"Plasma (X11)"* at the login screen.
+> **Wayland (tested on niri; Sway, Hyprland and KDE Plasma should work too):** the Shift + drag trigger works when DragShift runs from source on your distro's Qt (see [Wayland setup](#wayland-setup)). The prebuilt .deb bundles its own Qt, so on Wayland it only supports right-click → **Open With → DragShift**. GNOME has no layer-shell support, so Open With is the way to go there too, or pick *"Ubuntu on Xorg"* at the login screen.
 
 > **First launch on Windows:** SmartScreen may warn because the app isn't code-signed yet. Click **More info → Run anyway**.
 >
@@ -102,6 +102,32 @@ python -m dragshift
 ```
 
 On Linux, PySide6 also needs the Qt XCB libraries: `sudo apt install libxcb-cursor0 libxkbcommon-x11-0`.
+
+### Wayland setup
+
+Wayland doesn't let apps read the global mouse and keyboard state, position their own windows, or ask where the cursor is. DragShift works around each of these:
+
+- **Trigger:** the button and Shift state are read from the kernel input devices with `evdev`. DragShift only reads them, never grabs them, and keeps nothing but up/down flags. Your user must be in the `input` group: `sudo usermod -aG input $USER`, then log in again. If lingering is enabled for your user (`loginctl show-user $USER -p Linger`), reboot instead, because a lingering user manager keeps the old groups.
+- **Menu and notifications:** these are [wlr-layer-shell](https://wayland.app/protocols/wlr-layer-shell-unstable-v1) surfaces, created through LayerShellQt. When you press Shift, invisible full-screen surfaces appear on every monitor, and the drag entering one of them tells DragShift where the cursor is.
+- **Glass:** the screen behind the menu is captured with `grim`.
+
+LayerShellQt is linked against your system Qt, so PySide6 must come from your distro too (not pip). For example, on Arch:
+
+```bash
+sudo pacman -S pyside6 layer-shell-qt python-evdev python-pillow python-pillow-heif python-pymupdf python-numpy python-docx grim
+python -m dragshift
+```
+
+On niri, add this rule so the tool windows float instead of tiling (the menu and notifications don't need it):
+
+```kdl
+window-rule {
+    match app-id="^dragshift$"
+    open-floating true
+}
+```
+
+Tested on niri. On compositors without `wlr-screencopy` (e.g. KDE), the glass falls back to a plain tint.
 
 Tests: `python -m pytest -q`. Logs are written to `%LOCALAPPDATA%\DragShift\log.txt` on Windows, `~/Library/Logs/DragShift/log.txt` on Mac and `~/.local/share/DragShift/log.txt` on Linux.
 

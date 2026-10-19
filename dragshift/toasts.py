@@ -17,7 +17,7 @@ from PySide6.QtGui import (QColor, QCursor, QDesktopServices, QFont, QFontMetric
                            QGuiApplication, QPainter, QPainterPath, QPen, QPixmap)
 from PySide6.QtWidgets import QWidget
 
-from . import glass
+from . import glass, platform_wayland
 from .report import Result
 
 W, H = 380, 104
@@ -94,6 +94,9 @@ class ToastCard(QWidget):
         self.fade.valueChanged.connect(self._set_fade)
         self.spinner = QTimer(self, interval=16, timeout=self._spin)
         self.life = QTimer(self, singleShot=True, timeout=self.dismiss)
+        # Wayland: a layer surface is the only way to put a card at a chosen spot
+        self.layer = platform_wayland.make_layer(self) if sys.platform.startswith("linux") else None
+        self._rect = QRect()
 
     # ------------------------------------------------------------ state
     def working(self, title: str, detail: str = ""):
@@ -131,11 +134,21 @@ class ToastCard(QWidget):
 
     def _set_fade(self, v):
         self._fade = float(v)
-        self.setWindowOpacity(self._fade)
-        self.update()
+        if self.layer is None:
+            self.setWindowOpacity(self._fade)
+        self.update()   # layer surfaces have no window opacity: paintEvent fades instead
+
+    def _put(self, rect: QRect):
+        self._rect = QRect(rect)
+        if self.layer is not None:
+            self.resize(rect.size())
+            scr = QGuiApplication.screenAt(rect.center()) or QGuiApplication.primaryScreen()
+            self.layer.place(scr, rect.x(), rect.y())
+        else:
+            self.setGeometry(rect)
 
     def appear(self, rect: QRect):
-        self.setGeometry(rect)
+        self._put(rect)
         glass.apply_shape(self, glass.rounded_rect_path(QRectF(0, 0, W, H), 20))
         self.liquid.capture_at(rect)
         self.setWindowOpacity(0.0)
@@ -144,9 +157,9 @@ class ToastCard(QWidget):
         self.fade.start()
 
     def relocate(self, rect: QRect):
-        if rect == self.geometry():
+        if rect == self._rect:
             return
-        self.setGeometry(rect)
+        self._put(rect)
         if self.liquid.excluded:
             self.liquid.refresh()
         else:
@@ -215,6 +228,8 @@ class ToastCard(QWidget):
     # ------------------------------------------------------------ paint
     def paintEvent(self, e):
         p = QPainter(self)
+        if self.layer is not None:
+            p.setOpacity(self._fade)
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.TextAntialiasing)
         r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
@@ -328,6 +343,8 @@ class ToastStack:
         self.cards: list[ToastCard] = []
 
     def _screen_rect(self) -> QRect:
+        if sys.platform.startswith("linux") and platform_wayland.layer_shell_ok():
+            return platform_wayland.focused_screen().availableGeometry()   # no cursor pos on Wayland
         scr = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
         return scr.availableGeometry()
 
