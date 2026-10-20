@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import QAbstractItemView, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton
 
 from .window import GlassWindow
@@ -40,6 +41,7 @@ class CombineOrderWindow(GlassWindow):
         row.addWidget(cancel)
         self.confirm = QPushButton("Create PDF")
         self.confirm.setObjectName("primary")
+        self.confirm.setShortcut(QKeySequence(Qt.Key_Return))
         self.confirm.clicked.connect(self.accept_order)
         self.confirm.setEnabled(len(paths) >= 2)
         row.addWidget(self.confirm)
