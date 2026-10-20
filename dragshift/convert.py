@@ -24,9 +24,9 @@ except ImportError:  # pragma: no cover
     import fitz  # type: ignore
 
 IMAGE_TARGETS = ["PNG", "JPG", "WEBP", "HEIC", "TIFF", "AVIF", "BMP", "PDF", "ICO", "GIF"]
-PDF_TARGETS = ["JPG", "PNG", "DOCX", "TXT"]
-DOCX_TARGETS = ["PDF", "TXT"]
-TEXT_TARGETS = ["PDF", "DOCX"]
+PDF_TARGETS = ["JPG", "PNG", "DOCX", "TXT", "MD"]
+DOCX_TARGETS = ["PDF", "TXT", "MD"]
+TEXT_TARGETS = ["PDF", "DOCX", "MD"]
 
 PIL_FORMAT = {"PNG": "PNG", "JPG": "JPEG", "WEBP": "WEBP", "HEIC": "HEIF", "TIFF": "TIFF",
               "AVIF": "AVIF", "BMP": "BMP", "PDF": "PDF", "ICO": "ICO", "GIF": "GIF"}
@@ -213,6 +213,39 @@ def pdf_to_docx(src: str | Path) -> list[Path]:
     return [out]
 
 
+def pdf_to_md(src: str | Path) -> list[Path]:
+    """Large text becomes # / ## headings, short bold lines become bold, pages are split by a rule."""
+    pages = []
+    with open_pdf(src) as doc:
+        for page in doc:
+            paras = []
+            for b in page.get_text("dict")["blocks"]:
+                if b.get("type") != 0:
+                    continue
+                lines, size, bold = [], 0.0, False
+                for ln in b["lines"]:
+                    spans = ln["spans"]
+                    if spans:
+                        size = max(size, max(s["size"] for s in spans))
+                        bold = bold or any("Bold" in s["font"] for s in spans)
+                    lines.append("".join(s["text"] for s in spans).strip())
+                txt = " ".join(l for l in lines if l)
+                if not txt:
+                    continue
+                if size >= 20:
+                    txt = "# " + txt
+                elif size >= 16:
+                    txt = "## " + txt
+                elif bold and len(txt) < 120:
+                    txt = f"**{txt}**"
+                paras.append((b["bbox"][1], txt))
+            paras.sort(key=lambda t: t[0])
+            pages.append("\n\n".join(t for _, t in paras))
+    out = sibling(src, ext=".md")
+    out.write_text("\n\n---\n\n".join(pages).strip() + "\n", encoding="utf-8")
+    return [out]
+
+
 # ---------------------------------------------------------------- DOCX
 def _docx_paragraph_html(p) -> str:
     parts = []
@@ -270,6 +303,73 @@ def docx_to_txt(src: str | Path) -> list[Path]:
             lines.append("\t".join(c.text for c in row.cells))
     out = sibling(src, ext=".txt")
     out.write_text("\n".join(lines), encoding="utf-8")
+    return [out]
+
+
+def _md_escape_cell(text: str) -> str:
+    return text.replace("|", "\\|").replace("\n", " ").strip()
+
+
+def _md_table(rows: list[list[str]]) -> str:
+    if not rows:
+        return ""
+    width = max(len(r) for r in rows)
+    rows = [[_md_escape_cell(c) for c in r] + [""] * (width - len(r)) for r in rows]
+    lines = ["| " + " | ".join(rows[0]) + " |", "|" + " --- |" * width]
+    lines += ["| " + " | ".join(r) + " |" for r in rows[1:]]
+    return "\n".join(lines)
+
+
+def _docx_paragraph_md(p) -> str:
+    parts = []
+    for r in p.runs:
+        t = r.text
+        if not t.strip():
+            parts.append(t)
+            continue
+        lead, core, trail = t[:len(t) - len(t.lstrip())], t.strip(), t[len(t.rstrip()):]
+        if r.bold and r.italic:
+            core = f"***{core}***"
+        elif r.bold:
+            core = f"**{core}**"
+        elif r.italic:
+            core = f"*{core}*"
+        parts.append(lead + core + trail)
+    body = "".join(parts).strip()
+    if not body:
+        return ""
+    style = (p.style.name or "").lower() if p.style is not None else ""
+    if style.startswith("heading"):
+        lvl = "".join(c for c in style if c.isdigit()) or "1"
+        return "#" * min(int(lvl), 6) + " " + p.text.strip()
+    if style == "title":
+        return "# " + p.text.strip()
+    if "list" in style:
+        return ("1. " if "number" in style else "- ") + body
+    return body
+
+
+def docx_to_md(src: str | Path) -> list[Path]:
+    from docx import Document
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    d = Document(src)
+    blocks: list[str] = []
+    for child in d.element.body.iterchildren():
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag == "p":
+            md = _docx_paragraph_md(Paragraph(child, d))
+            # consecutive list items stay in one block (no blank line between them)
+            if md and blocks and md[:2] in ("- ", "1.") and blocks[-1][:2] == md[:2]:
+                blocks[-1] += "\n" + md
+            elif md:
+                blocks.append(md)
+        elif tag == "tbl":
+            t = Table(child, d)
+            blocks.append(_md_table([[c.text for c in row.cells] for row in t.rows]))
+    out = sibling(src, ext=".md")
+    out.write_text("\n\n".join(b for b in blocks if b) + "\n", encoding="utf-8")
     return [out]
 
 
@@ -352,6 +452,31 @@ def text_to_docx(src: str | Path) -> list[Path]:
     return [out]
 
 
+CODE_LANGS = {".json": "json", ".xml": "xml", ".html": "html", ".htm": "html", ".log": ""}
+
+
+def text_to_md(src: str | Path) -> list[Path]:
+    """.txt is kept as it is, .csv becomes a table, other formats (.json, .xml, .html, .log)
+    go into a fenced code block so they stay readable."""
+    import csv
+    ext = Path(src).suffix.lower()
+    text = read_text(src)
+    if ext == ".csv":
+        try:
+            rows = list(csv.reader(io.StringIO(text), dialect=csv.Sniffer().sniff(text[:4096])))
+        except csv.Error:
+            rows = list(csv.reader(io.StringIO(text)))
+        text = _md_table([r for r in rows if r])
+    elif ext in CODE_LANGS:
+        fence = "```"
+        while fence in text:
+            fence += "`"
+        text = f"{fence}{CODE_LANGS[ext]}\n{text.strip(chr(10))}\n{fence}"
+    out = sibling(src, ext=".md")
+    out.write_text(text.rstrip("\n") + "\n", encoding="utf-8")
+    return [out]
+
+
 # ---------------------------------------------------------------- dispatch
 def targets_for(cat: str, src_ext: str) -> list[str]:
     src_ext = src_ext.lower().lstrip(".")
@@ -362,7 +487,8 @@ def targets_for(cat: str, src_ext: str) -> list[str]:
         if not HEIF_OK:
             t = [x for x in t if x != "HEIC"]
         return t
-    return {"pdf": PDF_TARGETS, "docx": DOCX_TARGETS, "text": TEXT_TARGETS}.get(cat, [])
+    targets = {"pdf": PDF_TARGETS, "docx": DOCX_TARGETS, "text": TEXT_TARGETS}.get(cat, [])
+    return [x for x in targets if x != cur]
 
 
 def convert(src: str | Path, cat: str, target: str) -> list[Path]:
@@ -376,8 +502,10 @@ def convert(src: str | Path, cat: str, target: str) -> list[Path]:
             return pdf_to_txt(src)
         if target == "DOCX":
             return pdf_to_docx(src)
+        if target == "MD":
+            return pdf_to_md(src)
     if cat == "docx":
-        return docx_to_pdf(src) if target == "PDF" else docx_to_txt(src)
+        return {"PDF": docx_to_pdf, "MD": docx_to_md}.get(target, docx_to_txt)(src)
     if cat == "text":
-        return text_to_pdf(src) if target == "PDF" else text_to_docx(src)
+        return {"PDF": text_to_pdf, "MD": text_to_md}.get(target, text_to_docx)(src)
     raise ValueError(f"Can't convert {cat} to {target}")
