@@ -16,6 +16,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QSystemTrayIcon,
 
 from . import __version__, convert, glass, imaging, report, tools
 from .radial import Item, RadialMenu
+from .ordering import CombineOrderWindow
 from .settings import Settings, SettingsWindow, WelcomeWindow, TRIGGERS
 from .toasts import ToastStack
 from .trigger import DragShiftWatcher
@@ -260,8 +261,9 @@ class DragShiftApp(QObject):
         kind, name = item.key.split(":", 1)
         if kind == "convert":
             if cat == "image" and name == "PDF" and len(paths) > 1:
-                self.submit(f"convert:{name}", paths, lambda: convert.images_to_single_pdf(paths),
-                            f"Combining {len(paths)} images…")
+                self.open_window(CombineOrderWindow(paths, "Combine images into PDF", lambda ordered:
+                    self.submit(f"convert:{name}", ordered, lambda: convert.images_to_single_pdf(ordered),
+                                f"Combining {len(ordered)} images…")))
             else:
                 verb = f"Converting to {name}…"
                 self.submit(f"convert:{name}", paths,
@@ -269,7 +271,8 @@ class DragShiftApp(QObject):
             return
         if cat == "pdf":
             if name == "Merge":
-                self.submit("tool:Merge", paths, lambda: [imaging.merge_pdfs(paths)], "Merging…")
+                self.open_window(CombineOrderWindow(paths, "Merge PDFs", lambda ordered:
+                    self.submit("tool:Merge", ordered, lambda: [imaging.merge_pdfs(ordered)], "Merging…")))
             elif name == "Metadata":
                 self.open_window(tools.MetadataWindow(paths[0], self.notify, is_pdf=True))
             elif name == "Protect":

@@ -54,6 +54,8 @@ Open **DragShift** from the app menu. It sits in the panel's notification area, 
 3. Drop the file on a slice. The result is saved **next to the original**, and the original is never changed.
 4. To switch between **Convert** and **Tools**, tap **Shift** again.
 
+When combining multiple images into one PDF or merging PDFs, confirm the page order first. Drag files in the list or use **Move up / Move down**, then choose **Create PDF**. Cancel or Esc closes the list without creating a file. The first file in the confirmed order determines the output folder.
+
 Each action ends with a notification that shows what changed, for example *"2.4 MB → 610 KB · 75% smaller"* or *"2400×1600 → 1200×800"*, with **Open**, **Show in folder** and **Undo**. Undo moves the new file to the Recycle Bin (Trash on Mac and Linux).
 
 You can also right-click a file → **DragShift…**, use **Send to → DragShift**, or double-click the tray icon to pick a file.
