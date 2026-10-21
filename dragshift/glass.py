@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import os
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QImage, QLinearGradient,
@@ -155,12 +156,23 @@ QSpinBox, QLineEdit, QComboBox {{
   border-bottom-color: rgba(255,255,255,0.40);
   border-radius: 10px; padding: 4px 8px; selection-background-color: {ACCENT_B};
 }}
-QLineEdit:focus, QSpinBox:focus {{ border: 1px solid rgba(255,255,255,0.7); }}
+QLineEdit:focus, QSpinBox:focus, QComboBox:focus {{ border: 1px solid rgba(255,255,255,0.7); }}
+QComboBox {{ padding: 5px 10px; min-height: 18px; }}
+QComboBox:hover {{ background: rgba(255,255,255,0.08); }}
+QComboBox::drop-down {{ border: none; width: 26px; }}
+QComboBox::down-arrow {{ image: url("@CHEVRON@"); width: 12px; height: 12px; }}
+QComboBox QAbstractItemView::item {{ padding: 5px 8px; border-radius: 6px; }}
+QComboBox QAbstractItemView::item:selected {{ background: rgba(255,255,255,0.15); }}
+QSlider::handle:horizontal:hover {{ border: 3px solid rgba(90,200,255,0.45); margin: -8px 0; width: 12px; height: 12px; }}
+QFrame#row {{ background: transparent; border: none; border-top: 1px solid rgba(255,255,255,0.08); }}
+QFrame#row[first="true"] {{ border-top: none; }}
+QLabel#rowTitle {{ font-weight: 600; }}
+QLabel#value {{ color: {TEXT_DIM}; font-size: 9pt; }}
 QFrame#card {{ background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.14); border-radius: 14px; }}
 QLabel#big {{ font-size: 17pt; font-weight: 700; }}
 QLabel#good {{ color: #8dffb8; font-weight: 600; }}
 QLabel#warn {{ color: #ffd36b; font-weight: 600; }}
-QComboBox QAbstractItemView {{ background: #2a2438; border: 1px solid rgba(255,255,255,0.25); }}
+QComboBox QAbstractItemView {{ background: #2a2438; border: 1px solid rgba(255,255,255,0.25); border-radius: 8px; padding: 4px; outline: none; }}
 QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.5); background: rgba(255,255,255,0.1); }}
 QCheckBox::indicator:checked {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {ACCENT_A}, stop:1 {ACCENT_B}); }}
 QTableWidget {{ background: rgba(0,0,0,0.12); border: 1px solid rgba(255,255,255,0.18); border-radius: 8px; gridline-color: rgba(255,255,255,0.08); }}
@@ -180,7 +192,8 @@ QMenu::item:selected {{ background: rgba(255,255,255,0.15); }}
 def qss() -> str:
     """The stylesheet, with a font family that is really installed (see util.ui_family)."""
     from .util import ui_family
-    return _QSS.replace("@FONT@", ui_family(False))
+    chevron = (Path(__file__).with_name("assets") / "chevron.svg").as_posix()
+    return _QSS.replace("@FONT@", ui_family(False)).replace("@CHEVRON@", chevron)
 
 
 def __getattr__(name):        # keep `glass.QSS` working
