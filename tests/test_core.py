@@ -113,3 +113,53 @@ def test_shortcut_resolves_to_target(img, tmp_path):
     out = resolve_shortcuts([str(lnk)])
     assert Path(out[0]) == img and category(out[0]) == "image"
     assert resolve_shortcuts([str(img)]) == [str(img)]
+
+
+def test_markdown_targets():
+    assert "MD" in convert.targets_for("text", ".txt")
+    assert "MD" not in convert.targets_for("text", ".md")
+    assert "MD" in convert.targets_for("pdf", ".pdf") and "MD" in convert.targets_for("docx", ".docx")
+
+
+def test_text_to_md(tmp_path):
+    t = tmp_path / "notes.txt"
+    t.write_text("# already\nplain line\n")
+    md = convert.convert(t, "text", "MD")[0]
+    assert md.suffix == ".md" and md.read_text() == "# already\nplain line\n"
+
+    c = tmp_path / "data.csv"
+    c.write_text("name,note\nann,a|b\nbob,\n")
+    lines = convert.convert(c, "text", "MD")[0].read_text().splitlines()
+    assert lines[0] == "| name | note |" and lines[1] == "| --- | --- |"
+    assert lines[2] == "| ann | a\\|b |"
+
+    j = tmp_path / "x.json"
+    j.write_text('{"a": 1}\n')
+    assert convert.convert(j, "text", "MD")[0].read_text() == '```json\n{"a": 1}\n```\n'
+
+
+def test_docx_to_md(tmp_path):
+    from docx import Document
+    d = Document()
+    d.add_heading("Title", level=1)
+    p = d.add_paragraph("Plain ")
+    p.add_run("bold").bold = True
+    p.add_run(" and ")
+    p.add_run("italic").italic = True
+    d.add_paragraph("one", style="List Bullet")
+    d.add_paragraph("two", style="List Bullet")
+    t = d.add_table(rows=2, cols=2)
+    for i, v in enumerate(("a", "b", "c", "d")):
+        t.cell(i // 2, i % 2).text = v
+    src = tmp_path / "doc.docx"
+    d.save(src)
+    md = convert.convert(src, "docx", "MD")[0].read_text()
+    assert md.startswith("# Title\n\nPlain **bold** and *italic*\n\n- one\n- two\n\n")
+    assert "| a | b |\n| --- | --- |\n| c | d |" in md
+
+
+def test_pdf_to_md(pdf):
+    md = convert.convert(pdf, "pdf", "MD")[0].read_text()
+    pages = md.split("\n---\n")
+    assert len(pages) == 2
+    assert "# Hello page 1" in pages[0] and "Body text line for extraction." in pages[0]
