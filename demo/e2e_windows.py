@@ -243,6 +243,11 @@ def tool_win(title_re):
     return wk.find_window(title_re, 12)
 
 
+def drive_combination():
+    w = tool_win("(Merge PDFs|Combine images into PDF).*")
+    wk.click_title(w, "Create PDF")
+
+
 def drive_compress():
     w = tool_win("Compress.*")
     time.sleep(0.5)
@@ -553,7 +558,7 @@ def main():
         run("DOCX → TXT", "explorer", ["Letter.docx"], "Convert", "TXT", v_format("TXT", ".txt"))
         run("TXT → PDF", "explorer", ["Notes.txt"], "Convert", "PDF", v_format("PDF", ".pdf"))
         run("TXT → DOCX", "explorer", ["Notes.txt"], "Convert", "DOCX", v_format("DOCX", ".docx"))
-        run("2 images → 1 PDF", "explorer", ["Photo.jpg", "Second.jpg"], "Convert", "PDF", v_combined,
+        run("2 images → 1 PDF", "explorer", ["Photo.jpg", "Second.jpg"], "Convert", "PDF", v_combined, drive_combination,
             select_extra=True)
         # ---- image tools
         run("Compress to 200 KB", "explorer", ["Photo.jpg"], "Tools", "Compress", v_compress(200_000), drive_compress)
@@ -575,7 +580,7 @@ def main():
         run("PDF Protect", "explorer", ["Report.pdf"], "Tools", "Protect", v_protected, drive_protect)
         run("PDF Extract images", "explorer", ["Report.pdf"], "Tools", "Extract", v_extract)
         run("PDF Metadata", "explorer", ["Report.pdf"], "Tools", "Metadata", v_pdf_meta, drive_meta_all)
-        run("Merge 2 PDFs", "explorer", ["Appendix.pdf", "Report.pdf"], "Tools", "Merge", v_merged,
+        run("Merge 2 PDFs", "explorer", ["Appendix.pdf", "Report.pdf"], "Tools", "Merge", v_merged, drive_combination,
             select_extra=True)
         # ---- second launch with a file (Send To / right-click path)
         run_ipc("Send To → PNG", "Photo.jpg", "PNG", v_format("PNG", ".png"))
@@ -587,7 +592,7 @@ def main():
         run("Desktop: Crop", "desktop", ["D-Photo.jpg"], "Tools", "Crop", v_dims(lambda a, b: b[0] == b[1]), drive_crop)
         run("Desktop: Add BG", "desktop", ["D-Graphic.png"], "Tools", "Add BG", v_dims(lambda a, b: b[0] == b[1]),
             drive_addbg)
-        run("Desktop: 2 PDFs merge", "desktop", ["D-Appendix.pdf", "D-Report.pdf"], "Tools", "Merge", v_merged,
+        run("Desktop: 2 PDFs merge", "desktop", ["D-Appendix.pdf", "D-Report.pdf"], "Tools", "Merge", v_merged, drive_combination,
             select_extra=True)
     except Exception:
         wk.log("E2E ABORTED\n" + traceback.format_exc())

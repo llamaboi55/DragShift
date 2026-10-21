@@ -368,7 +368,7 @@ def main():
         run("PDF Split", ["D-Report.pdf"], "Tools", "Split", v_pdf_n(3))
         run("PDF Rotate", ["D-Report.pdf"], "Tools", "Rotate", v_rotated)
         run("PDF Compress", ["D-Report.pdf"], "Tools", "Compress", v_pdf_compress)
-        run("Merge 2 PDFs", ["D-Appendix.pdf", "D-Report.pdf"], "Tools", "Merge", v_merged)
+        run("Merge 2 PDFs", ["D-Appendix.pdf", "D-Report.pdf"], "Tools", "Merge", v_merged, enter_after())
         run("Compress (window, Enter)", ["D-Photo.jpg"], "Tools", "Compress", v_smaller, enter_after())
         run("Resize 50% (window, Enter)", ["D-Photo.jpg"], "Tools", "Resize",
             v_dims(lambda a, b: b == (a[0] // 2, a[1] // 2)), enter_after())

@@ -164,6 +164,9 @@ QComboBox QAbstractItemView {{ background: #2a2438; border: 1px solid rgba(255,2
 QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.5); background: rgba(255,255,255,0.1); }}
 QCheckBox::indicator:checked {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {ACCENT_A}, stop:1 {ACCENT_B}); }}
 QTableWidget {{ background: rgba(0,0,0,0.12); border: 1px solid rgba(255,255,255,0.18); border-radius: 8px; gridline-color: rgba(255,255,255,0.08); }}
+QListWidget {{ background: #2a2438; border: 1px solid rgba(255,255,255,0.18); border-radius: 8px; padding: 4px; }}
+QListWidget::item {{ padding: 7px 5px; border-radius: 5px; }}
+QListWidget::item:selected {{ background: rgba(255,255,255,0.15); color: white; }}
 QHeaderView {{ background: transparent; }}
 QTableCornerButton::section {{ background: transparent; border: none; }}
 QHeaderView::section {{ background: rgba(255,255,255,0.10); border: none; padding: 4px; font-weight: 600; }}
