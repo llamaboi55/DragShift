@@ -8,7 +8,8 @@ from pathlib import Path
 from PIL import Image, ImageChops, ImageDraw, ImageEnhance, ImageFilter, ImageOps
 from PIL.ExifTags import GPSTAGS, TAGS
 
-from .convert import atomic_save, fitz, flatten, open_image, open_pdf, save_image
+from .convert import (atomic_save, clean_exif, fitz, flatten, icc_fits, open_image, open_pdf,
+                      save_image, source_meta)
 from .util import sibling
 
 EXT_TARGET = {".jpg": "JPG", ".jpeg": "JPG", ".png": "PNG", ".webp": "WEBP", ".tif": "TIFF",
@@ -20,14 +21,29 @@ def target_for(path: str | Path) -> str:
     return EXT_TARGET.get(Path(path).suffix.lower(), "PNG")
 
 
-def save_like(im: Image.Image, src: str | Path, label: str, force_ext: str | None = None) -> Path:
-    """Save `im` next to `src` as '<name> <label>.<ext>' in the source's format."""
+def save_like(im: Image.Image, src: str | Path, label: str, force_ext: str | None = None,
+              keep_exif: bool = True) -> Path:
+    """Save `im` next to `src` as '<name> <label>.<ext>' in the source's format, with the
+    source's colour profile (and EXIF unless keep_exif=False)."""
     ext = force_ext or Path(src).suffix.lower()
     if ext in (".gif", ".ico"):
         ext = ".png"
     out = sibling(src, label, ext)
-    save_image(im, out, target_for(out))
+    icc, exif = source_meta(src)
+    save_image(im, out, target_for(out), icc=icc, exif=exif if keep_exif else None, keep_meta=False)
     return out
+
+
+def _quantize_png(im: Image.Image, quality: int, dst) -> None:
+    """Lossy PNG: quantise to a palette (like pngquant), keeps transparency and colour profile."""
+    colors = max(16, min(256, int(quality * 2.56)))
+    # fast octree: the size search and live preview run this many times (max-coverage is
+    # ~2 dB better but 500× slower)
+    q = im.convert("RGBA").quantize(colors=colors, method=Image.Quantize.FASTOCTREE,
+                                    dither=Image.Dither.FLOYDSTEINBERG)
+    icc = im.info.get("icc_profile")
+    kw = {"icc_profile": icc} if icc_fits(icc, "RGB") else {}
+    q.save(dst, "PNG", optimize=True, **kw)
 
 
 # ---------------------------------------------------------------- compress
@@ -40,11 +56,7 @@ def compress_image(src: str | Path, quality: int = 72, max_side: int | None = No
     out = sibling(src, "Compressed", ext)
     tgt = target_for(out)
     if tgt == "PNG":
-        # lossy PNG: quantise to a palette (like pngquant), keeps transparency
-        colors = max(16, min(256, int(quality * 2.56)))
-        q = im.convert("RGBA").quantize(colors=colors, method=Image.Quantize.FASTOCTREE,
-                                        dither=Image.Dither.FLOYDSTEINBERG)
-        atomic_save(lambda dst: q.save(dst, "PNG", optimize=True), out)
+        atomic_save(lambda dst: _quantize_png(im, quality, dst), out)
     elif tgt in ("BMP", "TIFF", "GIF", "ICO"):
         out = sibling(src, "Compressed", ".jpg")
         save_image(im, out, "JPG", quality=quality)
@@ -71,8 +83,7 @@ def encode_size(im: Image.Image, target: str, quality: int) -> int:
     """Bytes `im` would take saved as `target` at `quality` (PNG = palette-quantised)."""
     buf = io.BytesIO()
     if target == "PNG":
-        colors = max(16, min(256, int(quality * 2.56)))
-        im.convert("RGBA").quantize(colors=colors, method=Image.Quantize.FASTOCTREE).save(buf, "PNG", optimize=True)
+        _quantize_png(im, quality, buf)
     else:
         save_image(im, buf, target, quality=quality)
     return buf.tell()
@@ -114,10 +125,7 @@ def compress_to(src: str | Path, quality: int, max_side: int | None, target: str
         im.thumbnail((max_side, max_side), Image.LANCZOS)
     out = sibling(src, "Compressed", "." + ("jpg" if target == "JPG" else target.lower()))
     if target == "PNG":
-        colors = max(16, min(256, int(quality * 2.56)))
-        q = im.convert("RGBA").quantize(colors=colors, method=Image.Quantize.FASTOCTREE,
-                                        dither=Image.Dither.FLOYDSTEINBERG)
-        atomic_save(lambda dst: q.save(dst, "PNG", optimize=True), out)
+        atomic_save(lambda dst: _quantize_png(im, quality, dst), out)
     else:
         save_image(im, out, target, quality=quality)
     return out
@@ -240,28 +248,128 @@ def count_metadata(src: str | Path) -> tuple[int, bool]:
     return n, has_gps
 
 
-def strip_location(src: str | Path) -> Path:
-    """Remove only GPS tags, keep camera info and everything else."""
+META_KEEP_EXT = (".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".heic", ".heif", ".avif")
+
+
+def _exif_segment(exif: bytes) -> bytes | None:
+    if len(exif) + 2 > 0xFFFF:
+        return None
+    return b"\xff\xe1" + (len(exif) + 2).to_bytes(2, "big") + exif
+
+
+def rewrite_jpeg(src: str | Path, out, exif: bytes | None, drop_xmp: bool, primary_only: bool) -> bool:
+    """Change a JPEG's metadata without re-encoding the picture (zero quality loss).
+    The EXIF segment is replaced by `exif` (or removed); drop_xmp also drops XMP, IPTC and
+    comments; primary_only drops the extra MPF pictures (depth maps, HDR gain maps).
+    Returns False when the file can't be rewritten safely (caller re-encodes instead)."""
+    data = Path(src).read_bytes()
+    if data[:2] != b"\xff\xd8":
+        return False
+    segs, i = [], 2
+    while True:
+        if i + 4 > len(data) or data[i] != 0xFF:
+            return False
+        m = data[i + 1]
+        if m == 0xFF:
+            i += 1
+            continue
+        if m == 0xDA:
+            break
+        seg = data[i:i + 2 + int.from_bytes(data[i + 2:i + 4], "big")]
+        segs.append((m, seg))
+        i += len(seg)
+    scan = data[i:]
+    if primary_only:
+        end = scan.find(b"\xff\xd9")
+        if end < 0:
+            return False
+        scan = scan[:end + 2]
+    new_exif = _exif_segment(exif) if exif else None
+    if exif and new_exif is None:
+        return False
+    out_segs: list[bytes] = []
+    seen_mpf = placed = False
+    for m, seg in segs:
+        body = seg[4:]
+        is_exif = m == 0xE1 and body.startswith(b"Exif\x00\x00")
+        is_mpf = m == 0xE2 and body.startswith(b"MPF\x00")
+        drop = is_exif or (drop_xmp and (m in (0xED, 0xFE) or (m == 0xE1 and not is_exif))) \
+            or (primary_only and is_mpf)
+        if drop and seen_mpf and not primary_only:
+            return False  # removing bytes after the MPF index would break its offsets
+        seen_mpf = seen_mpf or is_mpf
+        if is_exif and new_exif and not placed:
+            out_segs.append(new_exif)
+            placed = True
+        elif not drop:
+            out_segs.append(seg)
+    if new_exif and not placed:
+        at = 1 if segs and segs[0][0] == 0xE0 else 0  # after JFIF APP0, else first
+        out_segs.insert(at, new_exif)
+    atomic_save(lambda dst: Path(dst).write_bytes(b"\xff\xd8" + b"".join(out_segs) + scan), out)
+    return True
+
+
+def _is_jpeg(src: str | Path) -> bool:
+    try:
+        with Image.open(src) as im:
+            return im.format in ("JPEG", "MPO")
+    except Exception:
+        return False
+
+
+def _xmp_has_gps(src: str | Path) -> bool:
     with Image.open(src) as im:
-        exif = im.getexif()
-        if 0x8825 in exif:
-            del exif[0x8825]
-        exif_bytes = exif.tobytes()
-    im = open_image(src)
-    out = sibling(src, "No Location", Path(src).suffix.lower() if Path(src).suffix.lower() in (".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff") else ".jpg")
-    # orientation already baked in by open_image → reset tag to 1
-    ex = Image.Exif()
-    ex.load(exif_bytes)
-    ex[0x0112] = 1
-    save_image(im, out, target_for(out), exif=ex.tobytes())
+        xmp = im.info.get("xmp") or im.info.get("XML:com.adobe.xmp") or b""
+    if isinstance(xmp, str):
+        xmp = xmp.encode("utf-8", "ignore")
+    return b"GPS" in xmp
+
+
+def strip_location(src: str | Path) -> Path:
+    """Remove only GPS tags, keep camera info, date taken, colour profile and everything else."""
+    ext = Path(src).suffix.lower()
+    out = sibling(src, "No Location", ext if ext in META_KEEP_EXT else ".jpg")
+    with Image.open(src) as im:  # read everything while open: TIFF loads sub-IFDs lazily
+        raw = im.getexif()
+        as_is = None  # EXIF minus GPS, for a lossless JPEG rewrite (orientation unchanged)
+        if raw:
+            ex = Image.Exif()
+            ex.load(raw.tobytes())
+            if 0x8825 in ex:
+                del ex[0x8825]
+            as_is = ex.tobytes() if len(ex) else None
+        upright = clean_exif(raw, drop_gps=True) if raw else None
+    if _is_jpeg(src) and out.suffix.lower() in (".jpg", ".jpeg"):
+        if rewrite_jpeg(src, out, as_is, drop_xmp=_xmp_has_gps(src), primary_only=False):
+            return out
+    im = open_image(src)  # pixels are rotated upright here, so the orientation tag resets to 1
+    save_image(im, out, target_for(out), icc=im.info.get("icc_profile"), exif=upright, keep_meta=False)
     return out
 
 
 def strip_image_metadata(src: str | Path) -> Path:
+    """Remove EXIF/XMP/IPTC/comments. The colour profile stays (it isn't personal and dropping
+    it changes the colours). JPEGs are rewritten without re-encoding."""
+    if _is_jpeg(src) and Path(src).suffix.lower() in (".jpg", ".jpeg"):
+        with Image.open(src) as im:
+            orient = im.getexif().get(0x0112, 1)
+        keep = None
+        if orient not in (1, None):  # keep only the rotation, or the photo shows sideways
+            ex = Image.Exif()
+            ex[0x0112] = orient
+            keep = ex.tobytes()
+        out = sibling(src, "Clean", Path(src).suffix.lower())
+        if rewrite_jpeg(src, out, keep, drop_xmp=True, primary_only=True):
+            return out
     im = open_image(src)  # exif_transpose applied, so orientation is baked in
     clean = Image.new(im.mode, im.size)
     clean.paste(im)
-    return save_like(clean, src, "Clean")
+    icc = im.info.get("icc_profile")
+    ext = Path(src).suffix.lower()
+    out = sibling(src, "Clean", ".png" if ext in (".gif", ".ico") else ext)
+    save_image(clean, out, target_for(out), icc=icc, keep_meta=False)
+    return out
 
 
 def read_pdf_metadata(src: str | Path) -> dict[str, str]:
@@ -383,7 +491,9 @@ def redact(im: Image.Image, rects: list[tuple[int, int, int, int]], mode: str = 
             region = im.crop(box)
             if mode == "pixelate":
                 w, h = region.size
-                f = max(8, min(w, h) // 6)
+                # blocks of at least a third of the box (≥ 12 px): small blocks over text can be
+                # reversed by matching candidate strings (e.g. Depix)
+                f = max(12, min(w, h) // 3)
                 region = region.resize((max(1, w // f), max(1, h // f)), Image.BILINEAR)
                 region = region.resize((w, h), Image.NEAREST)
             else:  # blur – strong enough that text can't be recovered

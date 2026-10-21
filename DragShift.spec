@@ -54,6 +54,9 @@ if IS_MAC:
             "LSMinimumSystemVersion": "11.0",
             "NSHighResolutionCapable": True,
             "NSRequiresAquaSystemAppearance": False,
+            # Word → PDF asks Pages to lay the document out (one-time macOS permission prompt)
+            "NSAppleEventsUsageDescription": "DragShift uses Pages to convert Word documents to PDF "
+                                             "with their original layout.",
             # show up in Finder's "Open With" for any file, and accept drops on the app icon
             "CFBundleDocumentTypes": [{
                 "CFBundleTypeName": "Any file",

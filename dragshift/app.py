@@ -79,6 +79,13 @@ def friendly_error(e: Exception) -> str:
         return "No permission to write next to this file. Try a folder you own, or set Settings → Save results → subfolder."
     if "cannot identify image" in low:
         return "This file doesn't look like an image DragShift can read."
+    if isinstance(e, MemoryError) or "decompression bomb" in low:
+        return "This image is too large to process in memory."
+    if "truncated" in low or "broken data stream" in low or "image file is truncated" in low \
+            or "premature end" in low or "not a jpeg" in low or "corrupt" in low:
+        return "This file looks damaged or incomplete, so it can't be converted."
+    if isinstance(e, OSError) and getattr(e, "errno", None) == 28:
+        return "The disk is full."
     if isinstance(e, FileNotFoundError):
         return "The file was moved or deleted."
     return msg
@@ -510,6 +517,25 @@ def selftest() -> int:
             (Path(d) / "n.txt").write_text("hello")
             docx = convert.convert(Path(d) / "n.txt", "text", "DOCX")[0]
             convert.convert(docx, "docx", "TXT")
+            # layout engine for PDF → Word must be bundled (falls back silently otherwise)
+            from pdf2docx import Converter  # noqa: F401
+            import cv2  # noqa: F401
+            docx2 = convert.pdf_to_docx(pdf)[0]
+            images = {}
+            convert.html_to_pdf(convert.docx_to_html(docx2, images), Path(d) / "w.pdf", images)
+            # animation, HEIC/AVIF encoders, colour management
+            frames = [Image.new("RGB", (16, 16), c) for c in ("red", "blue")]
+            frames[0].save(Path(d) / "a.gif", save_all=True, append_images=frames[1:], duration=100)
+            for t in ("WEBP", "AVIF", "PNG"):
+                out = convert.convert(Path(d) / "a.gif", "image", t)[0]
+                assert getattr(Image.open(out), "n_frames", 1) == 2, f"animation lost in {t}"
+            from PIL import ImageCms
+            srgb = ImageCms.ImageCmsProfile(ImageCms.createProfile("sRGB")).tobytes()
+            Image.new("RGB", (32, 32), "red").save(Path(d) / "c.png", icc_profile=srgb)
+            for t in ("HEIC", "AVIF", "JPG", "GIF"):
+                convert.convert(Path(d) / "c.png", "image", t)
+            assert Image.open(Path(d) / "c.jpg").info.get("icc_profile"), "colour profile dropped"
+            imaging.strip_location(Path(d) / "c.jpg")
             imaging.add_background(convert.open_image(src), imaging.Background())
             imaging.compress_pdf(pdf)
             imaging.protect_pdf(pdf, "pw")

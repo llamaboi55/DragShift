@@ -557,8 +557,8 @@ class AddBgWindow(ToolWindow):
         def work():
             out_im = imaging.add_background(open_image(path), params)
             out = sibling(path, "With Background", ".png")
-            from .convert import save_image
-            save_image(out_im, out, "PNG")
+            from .convert import save_image, source_meta
+            save_image(out_im, out, "PNG", icc=source_meta(path)[0], keep_meta=False)
             return [out]
         self.run(work, "Adding background…")
 
@@ -869,7 +869,7 @@ class RedactWindow(ToolWindow):
         label = {"black": "black boxes", "pixelate": "pixelated", "blur": "blurred"}[mode]
 
         def work():
-            return [imaging.save_like(imaging.redact(open_image(path), boxes, mode), path, "Redacted")]
+            return [imaging.save_like(imaging.redact(open_image(path), boxes, mode), path, "Redacted", keep_exif=False)]
         self.run(work, "Redacting…", f"{len(boxes)} area{'s' if len(boxes) != 1 else ''} {label}")
 
 
