@@ -1,6 +1,8 @@
 """DragShift: Shift+drag any file to convert or edit it from a radial liquid-glass menu."""
 from __future__ import annotations
 
+from .i18n import tr, tr_items
+
 import json
 import os
 import sys
@@ -8,13 +10,13 @@ import time
 import traceback
 from pathlib import Path
 
-from PySide6.QtCore import QDir, QObject, QPointF, QRunnable, Qt, QThreadPool, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, QPointF, QRunnable, Qt, QThreadPool, QTimer, QUrl, Signal
 from PySide6.QtGui import (QAction, QColor, QCursor, QDesktopServices, QGuiApplication, QIcon, QPainter,
                            QPixmap)
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
-from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QSystemTrayIcon, QWidget
+from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
-from . import __version__, convert, glass, imaging, report, tools
+from . import __version__, convert, glass, imaging, report, tools, video
 from .radial import Item, RadialMenu
 from .settings import Settings, SettingsWindow, WelcomeWindow, TRIGGERS
 from .toasts import ToastStack
@@ -31,22 +33,37 @@ IPC_NAME = ipc_name()
 
 GLYPHS = {"Compress": "⇲", "Metadata": "ⓘ", "Redact": "▮", "Crop": "⌗", "Edit": "☼",
           "Annotate": "✎", "Add BG": "▣", "Resize": "⤢", "Split": "✂", "Rotate": "⟳",
-          "Merge": "⧉", "Protect": "⚿", "Extract": "⧈"}
+          "Merge": "⧉", "Protect": "⚿", "Extract": "⧈", "Distort": "⌁"}
 
 HINTS = {
     "Compress": "Shrink file size", "Metadata": "View · remove GPS", "Redact": "Hide private info",
     "Crop": "Trim to a ratio", "Edit": "Light · colour · rotate", "Annotate": "Arrows · text · steps",
     "Add BG": "Gradient backdrop", "Resize": "Change dimensions", "Split": "One PDF per page",
     "Rotate": "Turn pages 90°", "Merge": "Join into one PDF", "Protect": "Add a password",
-    "Extract": "Save embedded images",
+    "Extract": "Save embedded images", "Distort": "Content-aware distortion · GIF / video / frame",
 }
 FORMAT_HINTS = {"JPG": "Small, universal", "PNG": "Lossless · transparency", "WEBP": "Smallest for web",
                 "HEIC": "iPhone format", "TIFF": "Print · archival", "AVIF": "Next-gen, tiny",
                 "BMP": "Uncompressed", "PDF": "Document", "ICO": "Windows icon", "GIF": "Legacy web",
                 "DOCX": "Editable Word", "TXT": "Plain text"}
 
-IMAGE_TOOLS = ["Compress", "Resize", "Crop", "Edit", "Annotate", "Redact", "Add BG", "Metadata"]
+IMAGE_TOOLS = ["Compress", "Resize", "Crop", "Edit", "Annotate", "Redact", "Add BG", "Distort", "Metadata"]
 PDF_TOOLS = ["Compress", "Split", "Rotate", "Protect", "Extract", "Metadata"]
+VIDEO_TOOLS = ["Trim", "Compress", "Resize", "Edit", "Mute", "Frame", "Distort", "Metadata", "Datamosh", "Audio"]
+VIDEO_GLYPHS = {"Trim": "✂", "Mute": "♪", "Frame": "▣", "Datamosh": "≈", "Audio": "♫"}
+VIDEO_HINTS = {"Trim": "Choose in · out", "Compress": "Smaller MP4", "Resize": "Change dimensions",
+               "Edit": "Rotate · crop · speed · colour", "Mute": "Remove audio", "Frame": "Save a PNG frame",
+               "Metadata": "View · remove tags", "Datamosh": "Melt video A into B", "Audio": "Extract sound · any format",
+               "Distort": HINTS['Distort']}
+AUDIO_TOOLS = ["Trim", "Edit", "Normalize", "Fade", "Compress", "Reverse", "Datamosh", "Transition", "Metadata"]
+AUDIO_HINTS = {"Trim": "Choose in · out", "Edit": "Volume · speed · channels", "Normalize": "Consistent loudness",
+               "Fade": "Smooth start · end", "Compress": "Smaller audio file", "Reverse": "Play backwards",
+               "Metadata": "View · remove tags", "Transition": "Blend an ordered audio series", "Datamosh":"Glitch the sound · intensity over time"}
+FORMAT_HINTS.update({"MP4": "H.264 · universal", "MKV": "Matroska · H.264", "MOV": "QuickTime · H.264",
+                     "WEBM": "VP9 · web video", "AVI": "MPEG-4 · legacy", "MP3": "Audio only", "WAV": "Uncompressed audio"})
+FORMAT_HINTS.update({"FLAC": "Lossless audio", "M4A": "AAC · phones", "AAC": "Compact audio",
+                     "OGG": "Vorbis audio", "OPUS": "Small · speech & music", "AIFF": "Uncompressed audio",
+                     "ZIP": "Universal archive", "7Z": "High compression", "TAR": "Archive container"})
 
 
 # ---------------------------------------------------------------- background jobs
@@ -135,6 +152,7 @@ class DragShiftApp(QObject):
         self.settings.apply()
         self.pool = QThreadPool.globalInstance()
         self.windows: list[QWidget] = []
+        qapp.aboutToQuit.connect(self._cancel_processing)
         self.toasts = ToastStack()
         self.menu = RadialMenu(self.build_rings, self.describe)
         self.menu.activated.connect(self.run_item)
@@ -147,6 +165,12 @@ class DragShiftApp(QObject):
         self.watcher.show_menu.connect(lambda pos: self.menu.popup(pos))
         self.watcher.toggle_ring.connect(self.menu.next_ring)
         self.watcher.hide_menu.connect(self.menu.close_menu)
+        from .selection import SelectionShortcut
+        self.selection_shortcut=SelectionShortcut(self)
+        self.watcher.selection_menu.connect(lambda pos:self.selection_shortcut.request()
+                                             if not self.menu.isVisible() else None)
+        self.selection_shortcut.ready.connect(lambda paths:self.show_click_menu(paths)
+                                              if not self.menu.isVisible() else None)
         self.watcher.start()
 
         # files handed over by "Send to", the right-click menu, or a second launch
@@ -158,19 +182,18 @@ class DragShiftApp(QObject):
         self.server.newConnection.connect(self._ipc)
 
         self.tray = QSystemTrayIcon(make_tray_icon(), self)
-        self.tray.setToolTip(f"{APP_NAME} — press {self.trigger_label()} while dragging a file")
+        self.tray.setToolTip(tr(f"{APP_NAME} — press {self.trigger_label()} while dragging a file"))
         m = QMenu()
         m.setStyleSheet(glass.QSS)
-        self.act_enabled = QAction("Enabled", m, checkable=True, checked=True)
+        self.act_enabled = QAction(tr("Enabled"), m, checkable=True, checked=True)
         self.act_enabled.toggled.connect(lambda on: setattr(self.watcher, "enabled", on))
-        m.addAction(self.act_enabled)
-        m.addAction("Open a file…", self.open_dialog)
+        m.addAction(tr(self.act_enabled))
         m.addSeparator()
-        m.addAction("Settings…", self.open_settings)
-        m.addAction("How to use", self.show_welcome)
-        m.addAction("Tip the developer ♥", lambda: QDesktopServices.openUrl(QUrl(TIP_URL)))
+        m.addAction(tr("Settings…"), self.open_settings)
+        m.addAction(tr("How to use"), self.show_welcome)
+        m.addAction(tr("Tip the developer ♥"), lambda: QDesktopServices.openUrl(QUrl(TIP_URL)))
         m.addSeparator()
-        m.addAction(f"Quit {APP_NAME}", self.qapp.quit)
+        m.addAction(tr(f"Quit {APP_NAME}"), self.qapp.quit)
         self.tray_menu = m
         self.tray.setContextMenu(m)
         self.tray.activated.connect(self._tray_click)
@@ -204,8 +227,7 @@ class DragShiftApp(QObject):
             if files:
                 self.queue_files(files)
             elif data.get("show"):
-                self.toasts.info("DragShift is already running",
-                                 f"Drag any file and press {self.trigger_label()}. It lives in the tray.")
+                self.show_ready()
             sock.disconnectFromServer()
             sock.deleteLater()
 
@@ -230,13 +252,16 @@ class DragShiftApp(QObject):
     # ------------------------------------------------------------ menu contents
     def describe(self, paths: list[str]) -> str:
         if len(paths) > 1:
-            return f"{len(paths)} files"
+            return f"{len(paths)} items"
+        if Path(paths[0]).is_dir():
+            return "Folder"
         return human_size(file_size(paths[0]))
 
     def build_rings(self, paths: list[str]) -> dict[str, list[Item]]:
-        cat = category(paths[0])
+        pack = Item("Pack", "▣", key="tool:Pack", hint="Create one ZIP or 7Z archive")
+        cat = None if Path(paths[0]).is_dir() else category(paths[0])
         if cat is None:
-            return {"Unsupported": []}
+            return {"Tools": [pack]}
         ext = Path(paths[0]).suffix
         same = [p for p in paths if category(p) == cat]
         convert_items = []
@@ -246,26 +271,87 @@ class DragShiftApp(QObject):
                 hint = f"{len(same)} images → 1 PDF"
             convert_items.append(Item(t, key=f"convert:{t}", hint=hint))
         rings: dict[str, list[Item]] = {"Convert": convert_items}
+        if cat == 'video' or cat == 'image' and ext.lower() == '.gif':
+            convert_items.append(Item('TG Emoji', key='tool:Telegram emoji', hint='100×100 · VP9 · up to 3 s · ≤256 KB'))
         if cat == "image":
             rings["Tools"] = [Item(n, GLYPHS[n], key=f"tool:{n}", hint=HINTS[n]) for n in IMAGE_TOOLS]
         elif cat == "pdf":
             names = PDF_TOOLS[:3] + (["Merge"] if len(same) > 1 else []) + PDF_TOOLS[3:]
             rings["Tools"] = [Item(n, GLYPHS[n], key=f"tool:{n}", hint=HINTS[n]) for n in names]
+        elif cat == "video":
+            for item in convert_items:
+                if item.label == "GIF":
+                    item.hint = "Animated · 12 fps"
+            rings["Tools"] = [Item(n, VIDEO_GLYPHS.get(n, GLYPHS.get(n, "")), key=f"tool:{n}",
+                                   hint=VIDEO_HINTS[n]) for n in VIDEO_TOOLS]
+        elif cat == "audio":
+            glyphs = {"Normalize": "≋", "Fade": "◢", "Reverse": "↶", "Transition": "≈"}
+            rings["Tools"] = [Item(n, glyphs.get(n, VIDEO_GLYPHS.get(n, GLYPHS.get(n, ""))),
+                                    key=f"tool:{n}", hint=AUDIO_HINTS[n]) for n in AUDIO_TOOLS]
+        elif cat == "archive":
+            rings["Tools"] = [Item("Extract", "⇩", key="tool:Extract archive", hint="Unpack to a new folder"),
+                               Item("Contents", "ⓘ", key="tool:Contents", hint="View files inside")]
+        rings.setdefault("Tools", []).append(pack)
         return rings
 
     # ------------------------------------------------------------ actions
     def run_item(self, item: Item, paths: list[str]):
+        if item.key == "tool:Pack":
+            from .archive_tools import ArchivePackWindow
+            self.open_window(ArchivePackWindow(paths, self.notify))
+            return
         cat = category(paths[0])
         paths = [p for p in paths if category(p) == cat]
         kind, name = item.key.split(":", 1)
+        if name == 'Distort':
+            from .distortion_tools import DistortionWindow
+            self.open_window(DistortionWindow(paths,self.notify))
+            return
+        if name == 'Telegram emoji':
+            from .video_tools import TelegramEmojiWindow
+            self.open_window(TelegramEmojiWindow(paths, self.notify))
+            return
         if kind == "convert":
-            if cat == "image" and name == "PDF" and len(paths) > 1:
+            if cat in ("video", "audio", "archive"):
+                self.submit(f"convert:{name}", paths,
+                            lambda: video.batch(paths, lambda p: convert.convert(p, cat, name)), f"Converting to {name}…")
+            elif cat == "image" and name == "PDF" and len(paths) > 1:
                 self.submit(f"convert:{name}", paths, lambda: convert.images_to_single_pdf(paths),
                             f"Combining {len(paths)} images…")
             else:
                 verb = f"Converting to {name}…"
                 self.submit(f"convert:{name}", paths,
                             lambda: [o for p in paths for o in convert.convert(p, cat, name)], verb)
+            return
+        if cat == "video":
+            if name=='Resize':
+                from .video_geometry import VideoResizeWindow
+                self.open_window(VideoResizeWindow(paths,self.notify))
+                return
+            if name == "Audio":
+                from .audio_tools import AudioToolWindow
+                self.open_window(AudioToolWindow(paths, self.notify, "Extract"))
+                return
+            from .video_tools import DatamoshWindow, VideoToolWindow
+            self.open_window(DatamoshWindow(paths, self.notify) if name == "Datamosh"
+                             else VideoToolWindow(paths, self.notify, name))
+            return
+        if cat == "audio":
+            if name=='Datamosh':
+                from .video_tools import DatamoshWindow
+                self.open_window(DatamoshWindow(paths,self.notify))
+                return
+            from .audio_tools import AudioToolWindow, AudioTransitionWindow
+            self.open_window(AudioTransitionWindow(paths, self.notify) if name == 'Transition'
+                             else AudioToolWindow(paths, self.notify, name))
+            return
+        if cat == "archive":
+            from . import archives
+            if name == "Extract archive":
+                self.submit("tool:Extract archive", paths, lambda: video.batch(paths, archives.extract), "Extracting archives…")
+            elif name == "Contents":
+                from .archive_tools import ArchiveContentsWindow
+                self.open_window(ArchiveContentsWindow(paths[0], self.notify))
             return
         if cat == "pdf":
             if name == "Merge":
@@ -300,6 +386,8 @@ class DragShiftApp(QObject):
     def open_window(self, w: QWidget):
         if hasattr(w, "submit"):
             w.submit = self.submit
+        if isinstance(w, tools.ToolWindow):
+            w.replacement_handler = self.open_window
         self.windows.append(w)
         w.destroyed.connect(lambda *_: self.windows.remove(w) if w in self.windows else None)
         if hasattr(w, "present"):
@@ -307,8 +395,20 @@ class DragShiftApp(QObject):
         else:
             w.show()
 
+    def _cancel_processing(self):
+        for window in self.windows:
+            if getattr(window, "busy", False) and hasattr(window, "job"):
+                window.job.control.cancel.set()
+
     def submit(self, action: str, srcs: list, fn, working: str = "Working…", extra: str = ""):
         """Run in the background. A spinner card appears only if it takes > 150 ms."""
+        if action in ("tool:Pack", "tool:Telegram emoji", "tool:Distort") or any(category(p) in ("video", "audio", "archive")
+                or str(p).lower().endswith('.gif') for p in srcs):
+            from .video_tools import VideoProgressWindow
+            window = VideoProgressWindow(action, srcs, fn, lambda r: self.toasts.new().done(r), extra)
+            self.open_window(window)
+            window.start(self.pool)
+            return
         state = {"card": None, "finished": False}
         names = Path(srcs[0]).name if len(srcs) == 1 else f"{len(srcs)} files"
 
@@ -342,14 +442,18 @@ class DragShiftApp(QObject):
 
     # ------------------------------------------------------------ misc
     def _tray_click(self, reason):
-        # macOS: a click on the menu-bar icon shows the menu; Windows: click opens a file
         if not IS_MAC and reason in (QSystemTrayIcon.DoubleClick, QSystemTrayIcon.Trigger):
-            self.open_dialog()
+            self.tray_menu.popup(QCursor.pos())
 
-    def open_dialog(self):
-        files, _ = QFileDialog.getOpenFileNames(None, "Choose file(s) for DragShift", QDir.homePath())
+    def show_ready(self):
+        self.toasts.info("DragShift is running", f"Drag a file, then press {self.trigger_label()}.")
+
+    def startup(self, files, *, quiet=False):
+        """Stay in the tray until a file is dragged or explicitly handed over."""
         if files:
-            self.show_click_menu(files)
+            QTimer.singleShot(120, lambda: self.queue_files(files))
+        elif not quiet:
+            QTimer.singleShot(400, self.show_ready)
 
     def show_click_menu(self, files: list[str]):
         g = (QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()).availableGeometry()
@@ -364,7 +468,7 @@ class DragShiftApp(QObject):
 
     def _settings_changed(self):
         self.watcher.set_key(self.settings.get("trigger"))
-        self.tray.setToolTip(f"{APP_NAME} — press {self.trigger_label()} while dragging a file")
+        self.tray.setToolTip(tr(f"{APP_NAME} — press {self.trigger_label()} while dragging a file"))
 
     def show_welcome(self):
         self.open_window(WelcomeWindow(self.settings, self.trigger_label()))
@@ -455,7 +559,15 @@ def main(argv: list[str] | None = None) -> int:
     qapp.setApplicationVersion(VERSION)
     qapp.setQuitOnLastWindowClosed(False)
     qapp.setWindowIcon(make_icon())
+    from .i18n import install as install_language
+    install_language(qapp,Settings().get('language'))
 
+    if "--files-selftest" in argv:
+        from .file_check import selftest as file_selftest
+        return file_selftest()
+    if "--video-selftest" in argv:
+        from .video_check import selftest as video_selftest
+        return video_selftest()
     if "--selftest" in argv:
         return selftest()
     files = [os.path.abspath(a) for a in argv[1:] if not a.startswith("-") and os.path.exists(a)]
@@ -466,13 +578,7 @@ def main(argv: list[str] | None = None) -> int:
     qapp.file_opened.connect(lambda f: app.queue_files([f]))
     if qapp.early_files:
         app.queue_files(list(qapp.early_files))
-    if files:  # e.g. "Send to → DragShift" or drag onto the .exe
-        QTimer.singleShot(120, lambda: app.queue_files(files))
-    elif not app.settings.get("welcomed"):
-        QTimer.singleShot(300, app.show_welcome)
-    elif "--quiet" not in argv:
-        QTimer.singleShot(400, lambda: app.toasts.info(
-            "DragShift is running", f"Drag any file, then press {app.trigger_label()}."))
+    app.startup(files, quiet="--quiet" in argv)
     return qapp.exec()
 
 

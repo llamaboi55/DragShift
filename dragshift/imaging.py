@@ -23,7 +23,7 @@ def target_for(path: str | Path) -> str:
 def save_like(im: Image.Image, src: str | Path, label: str, force_ext: str | None = None) -> Path:
     """Save `im` next to `src` as '<name> <label>.<ext>' in the source's format."""
     ext = force_ext or Path(src).suffix.lower()
-    if ext in (".gif", ".ico"):
+    if ext == ".ico":
         ext = ".png"
     out = sibling(src, label, ext)
     save_image(im, out, target_for(out))
@@ -33,6 +33,9 @@ def save_like(im: Image.Image, src: str | Path, label: str, force_ext: str | Non
 # ---------------------------------------------------------------- compress
 def compress_image(src: str | Path, quality: int = 72, max_side: int | None = None,
                    to_webp: bool = False) -> Path:
+    from .animation import is_animated
+    if is_animated(src):
+        return compress_to(src,quality,max_side,lossy_target(src,to_webp))
     im = open_image(src)
     if max_side and max(im.size) > max_side:
         im.thumbnail((max_side, max_side), Image.LANCZOS)
@@ -83,7 +86,7 @@ def lossy_target(src: str | Path, to_webp: bool = False) -> str:
     if to_webp:
         return "WEBP"
     t = target_for(src)
-    return t if t in ("JPG", "PNG", "WEBP", "AVIF", "HEIC") else "JPG"
+    return t if t in ("JPG", "PNG", "WEBP", "AVIF", "HEIC", "GIF") else "JPG"
 
 
 def plan_target_size(im: Image.Image, target: str, max_bytes: int) -> tuple[int, int | None]:
@@ -109,6 +112,15 @@ def plan_target_size(im: Image.Image, target: str, max_bytes: int) -> tuple[int,
 
 
 def compress_to(src: str | Path, quality: int, max_side: int | None, target: str) -> Path:
+    from .animation import is_animated, transform_image
+    if is_animated(src):
+        def shrink(frame):
+            if max_side:
+                frame.thumbnail((max_side,max_side),Image.LANCZOS)
+            if target=='GIF':
+                frame=frame.quantize(colors=max(16,min(256,int(quality*2.56))),method=Image.Quantize.FASTOCTREE)
+            return frame
+        return transform_image(src,'Compressed',shrink,target=target,quality=quality)
     im = open_image(src)
     if max_side and max(im.size) > max_side:
         im.thumbnail((max_side, max_side), Image.LANCZOS)
@@ -139,9 +151,18 @@ def resize_dims(size: tuple[int, int], mode: str, value: int) -> tuple[int, int]
 
 
 def resize_image(src: str | Path, dims: tuple[int, int]) -> Path:
-    im = open_image(src)
-    im = im.resize(dims, Image.LANCZOS)
-    return save_like(im, src, f"{dims[0]}x{dims[1]}")
+    from .animation import transform_image
+    return transform_image(src, f"{dims[0]}x{dims[1]}", lambda im: im.resize(dims, Image.LANCZOS))
+
+
+def crop_image(src, box, rotation=0):
+    from .animation import transform_image
+    return transform_image(src, 'Cropped', lambda im: im.rotate(-rotation, expand=True).crop(box))
+
+
+def edit_image(src, adjust):
+    from .animation import transform_image
+    return transform_image(src, 'Edited', lambda im: apply_adjust(im, adjust))
 
 
 # ---------------------------------------------------------------- metadata
@@ -258,6 +279,9 @@ def strip_location(src: str | Path) -> Path:
 
 
 def strip_image_metadata(src: str | Path) -> Path:
+    from .animation import is_animated, transform_image
+    if is_animated(src):
+        return transform_image(src,'Clean',lambda frame:frame.copy())
     im = open_image(src)  # exif_transpose applied, so orientation is baked in
     clean = Image.new(im.mode, im.size)
     clean.paste(im)

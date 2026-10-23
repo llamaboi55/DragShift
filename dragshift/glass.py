@@ -1,5 +1,4 @@
-"""Liquid-glass look: frosted blur, specular highlights and an iridescent (rainbow)
-rim. Used by the radial menu and every editor window."""
+"""Neutral frosted refraction and compatibility helpers for existing editors."""
 from __future__ import annotations
 
 import ctypes
@@ -7,37 +6,27 @@ import os
 import sys
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QImage, QLinearGradient,
-                           QPainter, QPainterPath, QPen, QPixmap, QRadialGradient)
+from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath, QPen, QPixmap
 
-# Rainbow stops for the iridescent rim (soft, pastel-ish so it reads as "glass").
-IRIDESCENT = ["#ff6b9d", "#ffb36b", "#ffe66b", "#7dffb0", "#6bd5ff", "#8a7bff", "#e07bff", "#ff6b9d"]
+from . import theme
 
-TEXT = "#ffffff"
-TEXT_DIM = "rgba(255,255,255,0.68)"
-ACCENT_A = "#5ac8ff"
-ACCENT_B = "#2f7bff"
-ACCENT_C = "#5b5bff"
+# Old imports keep working while all surfaces use the same neutral palette.
+IRIDESCENT = [theme.BORDER] * 8
+TEXT = theme.TEXT
+TEXT_DIM = theme.MUTED
+ACCENT_A = ACCENT_B = ACCENT_C = theme.ACCENT
 
 
 def iridescent_pen(center: QPointF, width: float, alpha: int = 200, angle: float = 30) -> QPen:
-    g = QConicalGradient(center, angle)
-    n = len(IRIDESCENT) - 1
-    for i, c in enumerate(IRIDESCENT):
-        col = QColor(c)
-        col.setAlpha(alpha)
-        g.setColorAt(i / n, col)
-    return QPen(QBrush(g), width)
+    color = QColor(theme.ACCENT)
+    color.setAlpha(alpha)
+    return QPen(color, width)
 
 
 def iridescent_brush(rect: QRectF, alpha: int = 60) -> QBrush:
-    g = QLinearGradient(rect.topLeft(), rect.bottomRight())
-    n = len(IRIDESCENT) - 1
-    for i, c in enumerate(IRIDESCENT):
-        col = QColor(c)
-        col.setAlpha(alpha)
-        g.setColorAt(i / n, col)
-    return QBrush(g)
+    color = QColor(theme.HOVER)
+    color.setAlpha(alpha)
+    return QBrush(color)
 
 
 def blur_pixmap(pm: QPixmap, radius: int = 18) -> QPixmap:
@@ -55,139 +44,34 @@ def blur_pixmap(pm: QPixmap, radius: int = 18) -> QPixmap:
 def paint_glass(p: QPainter, path: QPainterPath, backdrop: QPixmap | None = None,
                 backdrop_offset: QPointF = QPointF(0, 0), tint: QColor | None = None,
                 rim: bool = True, rainbow_alpha: int = 170, highlight: float = 1.0) -> None:
-    """Paint a liquid-glass surface filling `path`."""
-    rect = path.boundingRect()
+    """Paint neutral frosting, retaining the captured backdrop when supplied."""
     p.save()
     p.setRenderHint(QPainter.Antialiasing)
     p.setClipPath(path)
-
-    # 1. frosted backdrop (blurred desktop snapshot), slightly magnified = refraction
     if backdrop is not None and not backdrop.isNull():
-        p.save()
-        c = rect.center()
-        p.translate(c)
-        p.scale(1.04, 1.04)
-        p.translate(-c)
         p.drawPixmap(backdrop_offset, backdrop)
-        p.restore()
-
-    # 2. tint – keeps white text readable on any wallpaper
-    p.fillPath(path, tint or QColor(28, 24, 40, 105))
-
-    # 3. faint rainbow wash across the body
-    p.fillPath(path, iridescent_brush(rect, 26))
-
-    # 4. top specular sheen
-    sheen = QLinearGradient(rect.topLeft(), QPointF(rect.left(), rect.top() + rect.height() * 0.55))
-    sheen.setColorAt(0.0, QColor(255, 255, 255, int(70 * highlight)))
-    sheen.setColorAt(1.0, QColor(255, 255, 255, 0))
-    p.fillPath(path, sheen)
-
-    # 5. soft caustic glow lower-right
-    glow = QRadialGradient(QPointF(rect.right() - rect.width() * 0.2, rect.bottom() - rect.height() * 0.15),
-                           max(rect.width(), rect.height()) * 0.55)
-    glow.setColorAt(0.0, QColor(255, 255, 255, int(22 * highlight)))
-    glow.setColorAt(1.0, QColor(255, 255, 255, 0))
-    p.fillPath(path, glow)
-    p.restore()
-
+    fill = QColor(theme.PANEL)
+    if tint is not None:
+        fill.setAlpha(tint.alpha())
+    elif backdrop is not None and not backdrop.isNull():
+        fill.setAlpha(round(neutral_tint()[3] * 255))
+    p.fillPath(path, fill)
     if rim:
-        p.save()
-        p.setRenderHint(QPainter.Antialiasing)
-        # inner bezel glow: a wide, soft white stroke clipped to the inside of the shape
-        p.setClipPath(path)
-        for w, a in ((14, 10), (7, 16), (3, 26)):
-            p.setPen(QPen(QColor(255, 255, 255, int(a * highlight)), w))
-            p.drawPath(path)
-        p.setClipping(False)
-        # specular rim: bright on the edge facing the light (top-left), softer opposite
-        spec = QLinearGradient(rect.topLeft(), rect.bottomRight())
-        spec.setColorAt(0.0, QColor(255, 255, 255, int(235 * min(1.0, highlight))))
-        spec.setColorAt(0.35, QColor(255, 255, 255, 60))
-        spec.setColorAt(0.65, QColor(255, 255, 255, 35))
-        spec.setColorAt(1.0, QColor(255, 255, 255, 150))
-        p.setPen(QPen(QBrush(spec), 1.3))
+        p.setPen(QPen(QColor(theme.BORDER), 1))
         p.drawPath(path)
-        # iridescent dispersion just outside the rim
-        p.setPen(iridescent_pen(rect.center(), 1.4, rainbow_alpha))
-        p.drawPath(path.translated(0.0, 0.0))
-        p.restore()
+    p.restore()
 
 
 # ---------------------------------------------------------------- Qt stylesheet
-_QSS = f"""
-* {{ color: {TEXT}; font-family: "@FONT@", sans-serif; font-size: 10pt; }}
-QWidget#glassRoot {{ background: transparent; }}
-QLabel#title {{ font-size: 11pt; font-weight: 600; }}
-QLabel#dim, QLabel.dim {{ color: {TEXT_DIM}; font-size: 9pt; }}
-QLabel#section {{ color: {TEXT_DIM}; font-size: 8.5pt; font-weight: 600; letter-spacing: 1px; }}
-QPushButton {{
-  background: rgba(255,255,255,0.13); border: 1px solid rgba(255,255,255,0.30);
-  border-top-color: rgba(255,255,255,0.55); border-bottom-color: rgba(255,255,255,0.16);
-  border-radius: 15px; padding: 6px 15px; min-height: 18px;
-}}
-QPushButton:hover {{ background: rgba(255,255,255,0.22); }}
-QPushButton:pressed {{ background: rgba(255,255,255,0.08); }}
-QPushButton:checked {{
-  background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 rgba(255,138,92,0.85), stop:1 rgba(255,79,139,0.85));
-  border: 1px solid rgba(255,255,255,0.55);
-}}
-QPushButton#primary {{
-  background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {ACCENT_A}, stop:0.55 {ACCENT_B}, stop:1 {ACCENT_C});
-  border: 1px solid rgba(255,255,255,0.55); border-top-color: rgba(255,255,255,0.9);
-  font-weight: 600; padding: 7px 20px; border-radius: 16px;
-}}
-QPushButton#primary:hover {{ border: 1px solid #ffffff; }}
-QPushButton#chrome {{ background: transparent; border: none; padding: 2px 8px; font-size: 11pt; border-radius: 6px; }}
-QPushButton#chrome:hover {{ background: rgba(255,80,100,0.6); }}
-QPushButton#swatch {{ border-radius: 12px; padding: 0; min-width: 24px; max-width: 24px; min-height: 24px; max-height: 24px; }}
-QPushButton#swatch:checked {{ border: 2px solid #ffffff; }}
-QSlider::groove:horizontal {{ height: 4px; background: rgba(255,255,255,0.22); border-radius: 2px; }}
-QSlider::sub-page:horizontal {{
-  background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 {ACCENT_A}, stop:0.5 {ACCENT_B}, stop:1 {ACCENT_C}); border-radius: 2px;
-}}
-QSlider::handle:horizontal {{
-  background: #ffffff; width: 14px; height: 14px; margin: -6px 0; border-radius: 7px;
-  border: 1px solid rgba(0,0,0,0.15);
-}}
-QSpinBox, QLineEdit, QComboBox {{
-  background: rgba(0,0,0,0.16); border: 1px solid rgba(255,255,255,0.22);
-  border-bottom-color: rgba(255,255,255,0.40);
-  border-radius: 10px; padding: 4px 8px; selection-background-color: {ACCENT_B};
-}}
-QLineEdit:focus, QSpinBox:focus {{ border: 1px solid rgba(255,255,255,0.7); }}
-QFrame#card {{ background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.14); border-radius: 14px; }}
-QLabel#big {{ font-size: 17pt; font-weight: 700; }}
-QLabel#good {{ color: #8dffb8; font-weight: 600; }}
-QLabel#warn {{ color: #ffd36b; font-weight: 600; }}
-QComboBox QAbstractItemView {{ background: #2a2438; border: 1px solid rgba(255,255,255,0.25); }}
-QCheckBox::indicator {{ width: 16px; height: 16px; border-radius: 5px; border: 1px solid rgba(255,255,255,0.5); background: rgba(255,255,255,0.1); }}
-QCheckBox::indicator:checked {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {ACCENT_A}, stop:1 {ACCENT_B}); }}
-QTableWidget {{ background: rgba(0,0,0,0.12); border: 1px solid rgba(255,255,255,0.18); border-radius: 8px; gridline-color: rgba(255,255,255,0.08); }}
-QHeaderView {{ background: transparent; }}
-QTableCornerButton::section {{ background: transparent; border: none; }}
-QHeaderView::section {{ background: rgba(255,255,255,0.10); border: none; padding: 4px; font-weight: 600; }}
-QScrollBar:vertical {{ background: transparent; width: 8px; }}
-QScrollBar::handle:vertical {{ background: rgba(255,255,255,0.3); border-radius: 4px; min-height: 30px; }}
-QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
-QToolTip {{ background: #2a2438; color: white; border: 1px solid rgba(255,255,255,0.3); border-radius: 6px; padding: 4px; }}
-QMenu {{ background: #2a2438; border: 1px solid rgba(255,255,255,0.25); border-radius: 8px; padding: 4px; }}
-QMenu::item {{ padding: 6px 18px; border-radius: 5px; }}
-QMenu::item:selected {{ background: rgba(255,255,255,0.15); }}
-"""
-
 
 def qss() -> str:
-    """The stylesheet, with a font family that is really installed (see util.ui_family)."""
-    from .util import ui_family
-    return _QSS.replace("@FONT@", ui_family(False))
+    return theme.qss()
 
 
-def __getattr__(name):        # keep `glass.QSS` working
+def __getattr__(name):
     if name == "QSS":
         return qss()
     raise AttributeError(name)
-
 
 
 # ---------------------------------------------------------------- Windows acrylic
@@ -200,9 +84,8 @@ class _WCAD(ctypes.Structure):
     _fields_ = [("Attribute", ctypes.c_int), ("Data", ctypes.c_void_p), ("SizeOfData", ctypes.c_size_t)]
 
 
-def enable_acrylic(hwnd: int, tint_abgr: int = 0x40281E28) -> bool:
-    """Real blur-behind for a frameless translucent window (Windows 10/11).
-    Returns False elsewhere so callers can fall back to a painted frost."""
+def enable_acrylic(hwnd: int, tint_abgr: int = 0xB8FAFBFB) -> bool:
+    """Native neutral blur fallback; returns False when unavailable."""
     if sys.platform != "win32":
         return False
     try:
@@ -244,12 +127,10 @@ def rounded_rect_path(r: QRectF, radius: float) -> QPainterPath:
 
 # ---------------------------------------------------------------- live liquid backing
 def exclude_from_capture(hwnd: int) -> bool:
-    """Hide a window from screen capture (Windows 10 2004+), so we can re-capture what's
-    behind it while it's visible. Skipped while recording demos (it would hide us)."""
-    import os
+    """Allow refreshing the background without capturing the glass itself."""
     if sys.platform == "darwin":
         from . import platform_mac
-        return platform_mac.OK      # macOS: we capture "below our window" instead
+        return platform_mac.OK
     if sys.platform != "win32" or os.environ.get("DRAGSHIFT_RECORDING"):
         return False
     try:
@@ -258,11 +139,21 @@ def exclude_from_capture(hwnd: int) -> bool:
         return False
 
 
-from PySide6.QtCore import QObject, QRect, QRunnable, QThreadPool, QTimer, Signal  # noqa: E402
+from PySide6.QtCore import QObject, QRect, QRunnable, QThreadPool, QTimer, Signal, Slot  # noqa: E402
+
+
+def neutral_style():
+    from .liquid import GlassStyle
+    return GlassStyle(blur=12, strength=14, bezel=18, dispersion=.03, saturation=.60, spec=.20)
+
+
+def neutral_tint():
+    return (251, 251, 250, .82)
 
 
 class _LiquidSig(QObject):
     done = Signal(int, QImage, bool)
+    finished = Signal(object)
 
 
 class _LiquidJob(QRunnable):
@@ -275,15 +166,14 @@ class _LiquidJob(QRunnable):
         serial, backdrop, w, h, radius, style = self.args
         try:
             from . import liquid
-            sdf = liquid.sdf_rounded_rect(w, h, 0.5, 0.5, w - 0.5, h - 0.5, radius)
-            img, light = liquid.render(backdrop, sdf, style)
-            try:
-                self.sig.done.emit(serial, qimage_from_pil(img), light)
-            except RuntimeError:
-                pass  # window closed before the render finished
+            sdf = liquid.sdf_rounded_rect(w, h, .5, .5, w - .5, h - .5, radius)
+            image, light = liquid.render(backdrop, sdf, style, tint=neutral_tint())
+            self.sig.done.emit(serial, qimage_from_pil(image), light)
         except Exception:
             import traceback
             traceback.print_exc()
+        finally:
+            self.sig.finished.emit(self)
 
 
 def grab_screen(x: int, y: int, w: int, h: int, below_window: int = 0):
@@ -309,46 +199,50 @@ def grab_screen(x: int, y: int, w: int, h: int, below_window: int = 0):
 
 
 class LiquidBacking(QObject):
-    """Keeps a refracted snapshot of whatever is behind a rounded-rect window."""
+    """Keeps a refracted local snapshot of the background behind a window."""
     changed = Signal()
 
     def __init__(self, widget, radius: float, style=None):
         super().__init__(widget)
-        from .liquid import GlassStyle
         self.w = widget
         self.radius = radius
-        self.style = style or GlassStyle(blur=16, strength=14, bezel=20)
+        self.style = style or neutral_style()
         self.image: QImage | None = None
-        self.is_light = False
+        self.is_light = True
         self.excluded = False
         self._serial = 0
         self._debounce = QTimer(self, singleShot=True, interval=140, timeout=self.refresh)
 
     def capture_at(self, rect: QRect):
-        """Grab the screen under `rect` (call before the window is shown, or when excluded)."""
         below = 0
         if sys.platform == "darwin" and self.w.isVisible():
             from . import platform_mac
             below = platform_mac.window_number(self.w)
-        pil = grab_screen(rect.x(), rect.y(), rect.width(), rect.height(), below)
-        if pil is None:
+        backdrop = grab_screen(rect.x(), rect.y(), rect.width(), rect.height(), below)
+        if backdrop is None:
             return
         self._serial += 1
-        job = _LiquidJob(self._serial, pil, rect.width(), rect.height(), self.radius, self.style)
+        job = _LiquidJob(self._serial, backdrop, rect.width(), rect.height(), self.radius, self.style)
         from .util import keep, release
-        job.sig.done.connect(lambda *a, j=job: (release(j), self._done(*a)))
+        # A bound Qt slot disconnects when the window closes during a render.
+        job.sig.done.connect(self._done)
+        job.sig.finished.connect(release)
         QThreadPool.globalInstance().start(keep(job))
 
-    def _done(self, serial, img, light):
+    @Slot(int, QImage, bool)
+    def _done(self, serial, image, light):
         if serial == self._serial:
-            self.image, self.is_light = img, light
+            self.image, self.is_light = image, light
             self.changed.emit()
 
     def moved(self):
-        """Window moved/resized: refresh once it settles (only possible when excluded)."""
+        self._serial += 1  # discard a render captured at the old location or size
         if self.excluded:
-            self.image = None if self.image is not None and self.image.size() != self.w.size() else self.image
+            if self.image is not None and self.image.size() != self.w.size():
+                self.image = None
             self._debounce.start()
+        else:
+            self.image = None  # never re-capture a visible window without exclusion
 
     def refresh(self):
         if self.excluded and self.w.isVisible():

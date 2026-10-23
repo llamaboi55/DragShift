@@ -1,0 +1,13 @@
+/* XPM */
+static const char *control_chevron_down[] = {
+"12 8 2 1",
+"  c None",
+". c #6b6d68",
+"            ",
+" ..      .. ",
+"  ..    ..  ",
+"   ..  ..   ",
+"    ....    ",
+"     ..     ",
+"            ",
+"            "};

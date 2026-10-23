@@ -1,4 +1,4 @@
-name: Build Windows app
+name: Build desktop apps
 
 on:
   push:
@@ -28,7 +28,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller pytest
 
-      - name: Run tests
+      - name: Stage and verify native media engines
+        run: python packaging/media_engines.py --stage
+
+      - name: Test all media engines and editors
         run: python -m pytest -q
         env:
           QT_QPA_PLATFORM: offscreen
@@ -47,8 +50,13 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           foreach ($exe in @("dist\DragShift\DragShift.exe", "dist\DragShift.exe")) {
-            $p = Start-Process -FilePath $exe -ArgumentList "--selftest" -Wait -PassThru
-            if ($p.ExitCode -ne 0) { throw "Self-test failed for $exe ($($p.ExitCode))" }
+            foreach ($language in @('en', 'ru')) {
+              $env:DRAGSHIFT_LANGUAGE = $language
+              foreach ($flag in @('--selftest', '--files-selftest')) {
+                $p = Start-Process -FilePath $exe -ArgumentList $flag -Wait -PassThru
+                if ($p.ExitCode -ne 0) { throw "$language $flag failed for $exe ($($p.ExitCode))" }
+              }
+            }
             "Self-test passed: $exe"
           }
           "{0:N1} MB portable" -f ((Get-Item dist\DragShift.exe).Length / 1MB)
@@ -68,14 +76,17 @@ jobs:
       - name: Test the installer (silent install, run, uninstall)
         shell: pwsh
         run: |
-          $p = Start-Process dist\DragShift-Setup.exe -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TASKS=contextmenu" -Wait -PassThru
+          $p = Start-Process dist\DragShift-Setup.exe -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LANG=ru /TASKS=contextmenu" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "Install failed ($($p.ExitCode))" }
           $app = "$env:LOCALAPPDATA\Programs\DragShift\DragShift.exe"
           if (-not (Test-Path $app)) { throw "App not installed" }
           if (-not (Test-Path "HKCU:\Software\Classes\*\shell\DragShift\command")) { throw "Context menu not registered" }
+          if ((Get-ItemProperty 'HKCU:\Software\DragShift\DragShift').language -ne 'ru') { throw 'Russian installation language was not saved' }
           $env:QT_QPA_PLATFORM = "offscreen"
           $t = Start-Process $app -ArgumentList "--selftest" -Wait -PassThru
           if ($t.ExitCode -ne 0) { throw "Installed app self-test failed" }
+          $t = Start-Process $app -ArgumentList "--files-selftest" -Wait -PassThru
+          if ($t.ExitCode -ne 0) { throw "Installed media self-test failed" }
           Remove-Item Env:QT_QPA_PLATFORM
           $u = Start-Process "$env:LOCALAPPDATA\Programs\DragShift\unins000.exe" -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES" -Wait -PassThru
           Start-Sleep 3
@@ -144,6 +155,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller pytest
 
+      - name: Stage native media engines (including Liquid Rescale)
+        run: |
+          brew install ffmpeg sevenzip pkgconf liblqr libpng
+          export PKG_CONFIG_PATH="$(brew --prefix liblqr)/lib/pkgconfig:$(brew --prefix libpng)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          python packaging/media_engines.py --stage
+
       - name: Run tests
         run: python -m pytest -q
         env:
@@ -157,6 +174,9 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           dist/DragShift.app/Contents/MacOS/DragShift --selftest
+          for language in en ru; do
+            DRAGSHIFT_LANGUAGE=$language dist/DragShift.app/Contents/MacOS/DragShift --files-selftest
+          done
           codesign --verify --deep --verbose=2 dist/DragShift.app || true
           /usr/libexec/PlistBuddy -c "Print :LSUIElement" dist/DragShift.app/Contents/Info.plist
 
@@ -225,7 +245,8 @@ jobs:
             libxcb-shape0 libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1 libfontconfig1 libfreetype6 \
             libdbus-1-3 libegl1 libgl1 libglib2.0-0 \
             xvfb xfwm4 thunar xdotool dbus-x11 ffmpeg feh fonts-dejavu-core fonts-noto-core \
-            desktop-file-utils hicolor-icon-theme xdg-utils
+            desktop-file-utils hicolor-icon-theme xdg-utils \
+            build-essential pkg-config libpng-dev liblqr-1-0-dev libglib2.0-dev p7zip-full
 
       - uses: actions/checkout@v4
 
@@ -239,6 +260,9 @@ jobs:
           VIRTUAL_ENV=/opt/venv /opt/uv/bin/uv pip install -q -r requirements.txt pyinstaller pytest
           /opt/venv/bin/python --version
 
+      - name: Stage native media engines (including Liquid Rescale)
+        run: /opt/venv/bin/python packaging/media_engines.py --stage
+
       - name: Run tests
         env:
           QT_QPA_PLATFORM: offscreen
@@ -249,7 +273,7 @@ jobs:
 
       - name: Build the .deb
         run: |
-          PATH=/opt/venv/bin:$PATH packaging/linux/build-deb.sh 1.2.0
+          PATH=/opt/venv/bin:$PATH packaging/linux/build-deb.sh 1.1.0+files.7
           dpkg-deb --info dist/DragShift-linux-amd64.deb
           desktop-file-validate packaging/linux/dragshift.desktop
 
@@ -277,6 +301,9 @@ jobs:
             tail -25 e2e_linux_out/selftest.txt | sed 's/%/%25/g' | while IFS= read -r l; do echo "::error title=selftest::$l"; done
             exit $rc
           fi
+          for language in en ru; do
+            DRAGSHIFT_LANGUAGE=$language dragshift --files-selftest
+          done
 
       - name: End-to-end on XFCE (Xvfb + xfwm4 with compositor off + Thunar)
         run: |

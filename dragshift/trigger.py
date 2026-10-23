@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ctypes
 import sys
+import time
 
 from PySide6.QtCore import QObject, QPoint, QTimer, Signal
 from PySide6.QtGui import QCursor
@@ -20,6 +21,7 @@ class DragShiftWatcher(QObject):
     show_menu = Signal(QPoint)
     toggle_ring = Signal()
     hide_menu = Signal()
+    selection_menu = Signal(QPoint)
 
     def __init__(self, menu_visible, menu_got_drag, parent=None):
         super().__init__(parent)
@@ -33,6 +35,8 @@ class DragShiftWatcher(QObject):
         self._fired = False
         self._idle_ticks = 0
         self._shown_at = QPoint()
+        self._selection_tap = False
+        self._selection_started = 0.
         self._user32 = ctypes.windll.user32 if sys.platform == "win32" else None
         self._mac = None
         if sys.platform == "darwin":
@@ -65,6 +69,20 @@ class DragShiftWatcher(QObject):
     def _tick(self):
         lbtn, shift, esc = self._state()
         pos = QCursor.pos()
+        # A Shift tap with no mouse click is distinct from native Shift+click
+        # range selection. Resolve selected Explorer files only after release.
+        if self.key_name=='shift' and self.enabled and not self.menu_visible():
+            if shift and not self._shift_was and not lbtn:
+                self._selection_tap=True
+                self._selection_started=time.monotonic()
+            if lbtn or esc or self._selection_tap and self._other_key_down():
+                self._selection_tap=False
+            if not shift and self._shift_was and self._selection_tap:
+                self._selection_tap=False
+                if time.monotonic()-self._selection_started<.5:
+                    self.selection_menu.emit(pos)
+        else:
+            self._selection_tap=False
 
         if self.menu_visible():
             if not lbtn or esc:
@@ -93,3 +111,8 @@ class DragShiftWatcher(QObject):
                 self._down_at = None
                 self._fired = False
         self._shift_was = shift
+
+    def _other_key_down(self):
+        if self._user32 is None:
+            return False
+        return any(self._down(key) for key in range(1,255) if key not in (VK_SHIFT,0xA0,0xA1))
