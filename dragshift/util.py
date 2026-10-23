@@ -19,9 +19,13 @@ def category(path: str | Path) -> str | None:
         return "pdf"
     if ext in DOCX_EXTS:
         return "docx"
+    from . import documents, media
+    doc = documents.category_for(path)
+    if doc:
+        return doc
     if ext in TEXT_EXTS:
         return "text"
-    return None
+    return media.kind(path)
 
 
 def resolve_shortcuts(paths: list[str]) -> list[str]:

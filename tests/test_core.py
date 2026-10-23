@@ -99,7 +99,7 @@ def test_paths(tmp_path):
     f = tmp_path / "a.jpg"
     f.write_bytes(b"x")
     assert sibling(f, ext=".jpg").name == "a (1).jpg"
-    assert category("x.HEIC") == "image" and category("x.pdf") == "pdf" and category("x.zip") is None
+    assert category("x.HEIC") == "image" and category("x.pdf") == "pdf" and category("x.exe") is None
 
 
 @pytest.mark.skipif(__import__("sys").platform != "win32", reason="Windows shortcuts")

@@ -14,7 +14,7 @@ from PySide6.QtGui import (QAction, QColor, QCursor, QDesktopServices, QGuiAppli
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QSystemTrayIcon, QWidget
 
-from . import __version__, convert, glass, imaging, report, tools
+from . import __version__, convert, documents, glass, imaging, media, media_tools, report, tools
 from .radial import Item, RadialMenu
 from .settings import Settings, SettingsWindow, WelcomeWindow, TRIGGERS
 from .toasts import ToastStack
@@ -29,7 +29,7 @@ IS_MAC = sys.platform == "darwin"
 from .handoff import ipc_name
 IPC_NAME = ipc_name()
 
-GLYPHS = {"Compress": "⇲", "Metadata": "ⓘ", "Redact": "▮", "Crop": "⌗", "Edit": "☼",
+GLYPHS = {"Trim": "✂", "Compress": "⇲", "Metadata": "ⓘ", "Redact": "▮", "Crop": "⌗", "Edit": "☼",
           "Annotate": "✎", "Add BG": "▣", "Resize": "⤢", "Split": "✂", "Rotate": "⟳",
           "Merge": "⧉", "Protect": "⚿", "Extract": "⧈"}
 
@@ -43,8 +43,25 @@ HINTS = {
 FORMAT_HINTS = {"JPG": "Small, universal", "PNG": "Lossless · transparency", "WEBP": "Smallest for web",
                 "HEIC": "iPhone format", "TIFF": "Print · archival", "AVIF": "Next-gen, tiny",
                 "BMP": "Uncompressed", "PDF": "Document", "ICO": "Windows icon", "GIF": "Legacy web",
-                "DOCX": "Editable Word", "TXT": "Plain text"}
+                "DOCX": "Editable Word", "TXT": "Plain text",
+                "MP3": "Universal audio", "WAV": "Uncompressed", "FLAC": "Lossless audio",
+                "M4A": "AAC · Apple", "AAC": "Raw AAC", "OGG": "Vorbis", "OPUS": "Small · speech",
+                "WMA": "Windows audio", "AIFF": "Apple · uncompressed",
+                "MP4": "H.264 · plays anywhere", "MKV": "Lossless remux", "WEBM": "VP9 · web",
+                "MOV": "QuickTime", "AVI": "Legacy video",
+                "CSV": "Plain table", "TSV": "Tab-separated", "JSON": "Data", "XLSX": "Excel", "XLS": "Old Excel",
+                "ODS": "LibreOffice Calc", "HTML": "Web page", "MD": "Markdown", "PPTX": "PowerPoint",
+                "PPT": "Old PowerPoint", "ODP": "LibreOffice Impress", "ODT": "LibreOffice Writer",
+                "RTF": "Rich text", "DOC": "Old Word", "SVG": "Vector", "ZIP": "Universal archive",
+                "TAR": "Unix archive", "TAR.GZ": "Gzip tarball", "TAR.XZ": "Smallest tarball",
+                "TAR.BZ2": "Bzip2 tarball", "SRT": "Subtitles", "VTT": "Web subtitles", "ASS": "Styled subtitles"}
 
+MEDIA_HINTS = {
+    "audio": {"Compress": "Smaller file", "Trim": "Cut start and end", "Edit": "Volume · speed · fades",
+              "Merge": "Join into one", "Metadata": "Remove tags"},
+    "video": {"Compress": "Smaller file", "Trim": "Cut start and end", "Edit": "Rotate · speed · sound",
+              "Merge": "Join into one", "Metadata": "Remove tags · location"},
+}
 IMAGE_TOOLS = ["Compress", "Resize", "Crop", "Edit", "Annotate", "Redact", "Add BG", "Metadata"]
 PDF_TOOLS = ["Compress", "Split", "Rotate", "Protect", "Extract", "Metadata"]
 
@@ -237,17 +254,24 @@ class DragShiftApp(QObject):
         cat = category(paths[0])
         if cat is None:
             return {"Unsupported": []}
-        ext = Path(paths[0]).suffix
+        ext = documents.full_suffix(paths[0])
         same = [p for p in paths if category(p) == cat]
         convert_items = []
         for t in convert.targets_for(cat, ext):
             hint = FORMAT_HINTS.get(t, "")
             if cat == "image" and t == "PDF" and len(same) > 1:
                 hint = f"{len(same)} images → 1 PDF"
+            elif cat == "video" and t in media.VIDEO_TO_AUDIO:
+                hint = "Extract audio"
+            elif cat == "video" and t == "GIF":
+                hint = "Animated clip · no sound"
             convert_items.append(Item(t, key=f"convert:{t}", hint=hint))
         rings: dict[str, list[Item]] = {"Convert": convert_items}
         if cat == "image":
             rings["Tools"] = [Item(n, GLYPHS[n], key=f"tool:{n}", hint=HINTS[n]) for n in IMAGE_TOOLS]
+        elif cat in ("audio", "video"):
+            names = ["Compress", "Trim", "Edit"] + (["Merge"] if len(same) > 1 else []) + ["Metadata"]
+            rings["Tools"] = [Item(n, GLYPHS[n], key=f"tool:{n}", hint=MEDIA_HINTS[cat][n]) for n in names]
         elif cat == "pdf":
             names = PDF_TOOLS[:3] + (["Merge"] if len(same) > 1 else []) + PDF_TOOLS[3:]
             rings["Tools"] = [Item(n, GLYPHS[n], key=f"tool:{n}", hint=HINTS[n]) for n in names]
@@ -266,6 +290,9 @@ class DragShiftApp(QObject):
                 verb = f"Converting to {name}…"
                 self.submit(f"convert:{name}", paths,
                             lambda: [o for p in paths for o in convert.convert(p, cat, name)], verb)
+            return
+        if cat in ("audio", "video"):
+            self.run_media_tool(name, paths, cat)
             return
         if cat == "pdf":
             if name == "Merge":
@@ -291,6 +318,30 @@ class DragShiftApp(QObject):
                 self.open_window(tools.ResizeWindow(paths, self.notify))
             else:
                 self.open_window(windows[name](paths[0], self.notify))
+        except UserError as e:
+            self.toasts.error(f"Couldn't open {name}", str(e))
+        except Exception as e:  # noqa: BLE001
+            traceback.print_exc()
+            self.toasts.error(f"Couldn't open {name}", friendly_error(e))
+
+    def run_media_tool(self, name: str, paths: list[str], cat: str):
+        try:
+            if name == "Compress":
+                self.open_window(media_tools.MediaCompressWindow(paths, self.notify, cat))
+            elif name == "Trim":
+                self.open_window(media_tools.TrimWindow(paths[0], self.notify, cat))
+            elif name == "Edit":
+                self.open_window(media_tools.MediaEditWindow(paths[0], self.notify, cat))
+            elif name == "Merge":
+                self.submit("tool:Merge", paths, lambda: [media.merge(paths, cat)], f"Joining {len(paths)} files…")
+            elif name == "Metadata":
+                tags = sorted({k for p in paths for k in media.read_tags(p)})
+                shown = ", ".join(tags[:4]) + ("…" if len(tags) > 4 else "")
+                where = " (includes location)" if any(("location" in t.lower() or "gps" in t.lower()) for t in tags) else ""
+                extra = f"{len(tags)} tag{'s' if len(tags) != 1 else ''} removed: {shown}{where}" if tags \
+                    else "no tags found"
+                self.submit("tool:Metadata", paths, lambda: [media.strip_metadata(p)[0] for p in paths],
+                            "Removing metadata…", extra)
         except UserError as e:
             self.toasts.error(f"Couldn't open {name}", str(e))
         except Exception as e:  # noqa: BLE001
@@ -507,6 +558,20 @@ def selftest() -> int:
             pdf = convert.convert(src, "image", "PDF")[0]
             for t in convert.PDF_TARGETS:
                 convert.convert(pdf, "pdf", t)
+            md = Path(d) / "n.md"
+            md.write_text("# Hi\n\n- a\n- b\n")
+            for t in convert.targets_for("markdown", ".md"):
+                convert.convert(md, "markdown", t)
+            csvf = Path(d) / "t.csv"
+            csvf.write_text("a,b\n1,2\n")
+            for t in convert.targets_for("sheet", ".csv"):
+                if t not in ("ODS", "XLS"):  # these need LibreOffice
+                    convert.convert(csvf, "sheet", t)
+            if media.available():
+                wav = Path(d) / "t.wav"
+                wav.write_bytes(media.silent_wav())
+                for t in convert.targets_for("audio", ".wav"):
+                    convert.convert(wav, "audio", t)
             (Path(d) / "n.txt").write_text("hello")
             docx = convert.convert(Path(d) / "n.txt", "text", "DOCX")[0]
             convert.convert(docx, "docx", "TXT")
@@ -523,6 +588,17 @@ def selftest() -> int:
                       tools.MetadataWindow(str(src), n), tools.CompressWindow([str(src)], n),
                       tools.ResizeWindow([str(src)], n), tools.ProtectWindow(str(pdf), n)):
                 w.close()
+            if media.available():
+                clip = Path(d) / "c.mp4"
+                media.run_plain(["-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=2", "-f", "lavfi", "-i",
+                                 "sine=duration=2", "-c:v", "mpeg4", "-c:a", "aac", "-shortest", str(clip)])
+                for w in (media_tools.MediaCompressWindow([str(wav)], n, "audio"),
+                          media_tools.MediaCompressWindow([str(clip)], n, "video"),
+                          media_tools.TrimWindow(str(wav), n, "audio"), media_tools.TrimWindow(str(clip), n, "video"),
+                          media_tools.MediaEditWindow(str(wav), n, "audio"), media_tools.MediaEditWindow(str(clip), n, "video")):
+                    w.close()
+                media.compress_audio(wav, kbps=64)
+                media.trim(clip, 0, 1)
             ToastStack().info("ok", "ok").dismiss()
             check_text_renders()
         print("SELFTEST OK")

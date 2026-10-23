@@ -303,17 +303,23 @@ td { border: 1px solid #888; padding: 3pt 5pt; font-size: 10pt; }
 """
 
 
-def html_to_pdf(body_html: str, out: Path) -> None:
-    story = fitz.Story(html=body_html, user_css=CSS)
+def html_to_pdf(body_html: str | list[str], out: Path, *, base: Path | None = None,
+                landscape: bool = False, extra_css: str = "") -> None:
+    """A list of strings makes one section each, always starting on a fresh page (slides, sheets).
+    `base` is the folder relative images are loaded from."""
+    chunks = body_html if isinstance(body_html, list) else [body_html]
+    archive = fitz.Archive(str(base)) if base else None
     writer = fitz.DocumentWriter(str(out))
-    mediabox = fitz.paper_rect("letter")
+    mediabox = fitz.paper_rect("letter-l" if landscape else "letter")
     where = mediabox + (54, 54, -54, -54)
-    more = True
-    while more:
-        dev = writer.begin_page(mediabox)
-        more, _ = story.place(where)
-        story.draw(dev)
-        writer.end_page()
+    for chunk in chunks:
+        story = fitz.Story(html=chunk, user_css=CSS + extra_css, archive=archive)
+        more = True
+        while more:
+            dev = writer.begin_page(mediabox)
+            more, _ = story.place(where)
+            story.draw(dev)
+            writer.end_page()
     writer.close()
 
 
@@ -321,7 +327,11 @@ def docx_to_pdf(src: str | Path) -> list[Path]:
     src = Path(src)
     out = sibling(src, ext=".pdf")
     if not _word_to_pdf(src, out):
-        html_to_pdf(docx_to_html(src), out)
+        from . import documents
+        if documents.lo_available():
+            documents.lo_convert(src, "pdf", ".pdf", out)
+        else:
+            html_to_pdf(docx_to_html(src), out)
     return [out]
 
 
@@ -362,11 +372,23 @@ def targets_for(cat: str, src_ext: str) -> list[str]:
         if not HEIF_OK:
             t = [x for x in t if x != "HEIC"]
         return t
-    return {"pdf": PDF_TARGETS, "docx": DOCX_TARGETS, "text": TEXT_TARGETS}.get(cat, [])
+    if cat in ("audio", "video"):
+        from . import media
+        return media.targets_for(cat, src_ext)
+    from . import documents
+    base = {"pdf": PDF_TARGETS, "docx": DOCX_TARGETS, "text": TEXT_TARGETS}.get(cat, [])
+    return base + [t for t in documents.targets_for(cat, src_ext) if t not in base]
 
 
 def convert(src: str | Path, cat: str, target: str) -> list[Path]:
     target = target.upper()
+    if cat in ("audio", "video"):
+        from . import media
+        return media.convert_media(src, cat, target)
+    from . import documents
+    if cat in documents.CATEGORIES or (documents.handles(cat, target) and
+                                       target not in PDF_TARGETS + DOCX_TARGETS + TEXT_TARGETS):
+        return documents.convert_doc(src, cat, target)
     if cat == "image":
         return image_to(src, target)
     if cat == "pdf":
