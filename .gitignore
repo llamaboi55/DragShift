@@ -5,4 +5,7 @@ dist/
 *.spec.bak
 .pytest_cache/
 .venv/
+bin/
 e2e_*_out/
+# Local project knowledge and verification memory
+graphify-out/

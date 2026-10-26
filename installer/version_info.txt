@@ -1,15 +1,15 @@
 VSVersionInfo(
-  ffi=FixedFileInfo(filevers=(1, 1, 0, 0), prodvers=(1, 1, 0, 0), mask=0x3f, flags=0x0, OS=0x40004,
+  ffi=FixedFileInfo(filevers=(1, 1, 0, 8), prodvers=(1, 1, 0, 8), mask=0x3f, flags=0x0, OS=0x40004,
                     fileType=0x1, subtype=0x0, date=(0, 0)),
   kids=[
     StringFileInfo([StringTable('040904B0', [
       StringStruct('CompanyName', 'DragShift'),
-      StringStruct('FileDescription', 'DragShift — Shift+drag file converter'),
-      StringStruct('FileVersion', '1.1.0'),
+      StringStruct('FileDescription', 'DragShift — Files, Audio, Video and Datamosh custom build'),
+      StringStruct('FileVersion', '1.1.0+files.9'),
       StringStruct('InternalName', 'DragShift'),
       StringStruct('OriginalFilename', 'DragShift.exe'),
       StringStruct('ProductName', 'DragShift'),
-      StringStruct('ProductVersion', '1.1.0')])]),
+      StringStruct('ProductVersion', '1.1.0+files.9')])]),
     VarFileInfo([VarStruct('Translation', [1033, 1200])])
   ]
 )

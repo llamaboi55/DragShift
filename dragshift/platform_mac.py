@@ -63,6 +63,10 @@ def window_number(widget) -> int:
     """CGWindowID of a Qt top-level widget (winId() is an NSView*)."""
     if not OK:
         return 0
+    from PySide6.QtGui import QGuiApplication
+    if QGuiApplication.platformName() != 'cocoa':
+        # Headless Qt IDs are small synthetic integers, not Objective-C pointers.
+        return 0
     try:
         import objc
         view = objc.objc_object(c_void_p=int(widget.winId()))

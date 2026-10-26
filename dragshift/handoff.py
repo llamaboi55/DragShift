@@ -12,7 +12,7 @@ def ipc_name() -> str:
 
 
 def try_handoff(argv: list[str]) -> bool:
-    if "--selftest" in argv:
+    if any(flag in argv for flag in ("--selftest", "--video-selftest", "--files-selftest")):
         return False
     files = [os.path.abspath(a) for a in argv[1:] if not a.startswith("-") and os.path.exists(a)]
     payload = {"files": files} if files else {"show": "--quiet" not in argv}

@@ -123,10 +123,16 @@ def atomic_save(write, out):
 
 def image_to(src: str | Path, target: str) -> list[Path]:
     target = target.upper()
-    im = open_image(src)
-    out = sibling(src, ext="." + target.lower())
-    save_image(im, out, target)
-    return [out]
+    if target in ('MP4', 'WEBM', 'MOV', 'MKV', 'AVI'):
+        from .video import convert_video
+        return convert_video(src, target)
+    from .animation import FRAME_TARGETS, extract_frames, transform_image
+    if target in FRAME_TARGETS:
+        with Image.open(src) as source:
+            frames = source.format == 'GIF' and getattr(source, 'is_animated', False)
+        if frames:
+            return [extract_frames(src, target)]
+    return [transform_image(src, '', target=target)]
 
 
 def images_to_single_pdf(srcs: list[str | Path]) -> list[Path]:
@@ -357,8 +363,20 @@ def targets_for(cat: str, src_ext: str) -> list[str]:
     src_ext = src_ext.lower().lstrip(".")
     same = {"jpeg": "JPG", "jpg": "JPG", "tif": "TIFF", "tiff": "TIFF", "heif": "HEIC"}
     cur = same.get(src_ext, src_ext.upper())
+    if cat == "audio":
+        from .audio import TARGETS
+        cur = {"AIF": "AIFF", "OGA": "OGG", "M4B": "M4A"}.get(cur, cur)
+        return [t for t in TARGETS if t != cur]
+    if cat == "archive":
+        from .archives import TARGETS
+        return [t for t in TARGETS if t != cur]
+    if cat == "video":
+        from .video import TARGETS
+        return [t for t in TARGETS if t != cur]
     if cat == "image":
         t = [x for x in IMAGE_TARGETS if x != cur]
+        if cur in ('GIF', 'WEBP', 'PNG', 'AVIF'):
+            t += ['MP4', 'WEBM'] if cur == 'GIF' else []
         if not HEIF_OK:
             t = [x for x in t if x != "HEIC"]
         return t
@@ -367,6 +385,15 @@ def targets_for(cat: str, src_ext: str) -> list[str]:
 
 def convert(src: str | Path, cat: str, target: str) -> list[Path]:
     target = target.upper()
+    if cat == "audio":
+        from .audio import convert_audio
+        return convert_audio(src, target)
+    if cat == "archive":
+        from .archives import convert_archive
+        return convert_archive(src, target)
+    if cat == "video":
+        from .video import convert_video
+        return convert_video(src, target)
     if cat == "image":
         return image_to(src, target)
     if cat == "pdf":

@@ -62,6 +62,8 @@ def _dim_str(d) -> str:
 def summarize(action: str, srcs: list, outs: list, extra: str = "") -> Result:
     srcs = [Path(s) for s in srcs]
     outs = [Path(o) for o in outs if o]
+    if action == 'tool:Print interlace':
+        return Result('Print job submitted', extra or 'The raster was sent to the selected printer.', outs, srcs)
     if not outs:
         return Result(action, extra or "Nothing was written", [], srcs)
     src = srcs[0] if srcs else outs[0]
@@ -71,8 +73,79 @@ def summarize(action: str, srcs: list, outs: list, extra: str = "") -> Result:
     o0 = outs[0]
     good = ""
 
+    if action == 'tool:Interlace':
+        return Result('Interlace ready', f'{o0.name} · {_dim_str(dims(o0))} · {human_size(after)}', outs, srcs)
+
+    if action == "tool:Pack":
+        return Result("Archive created", f"{o0.name} · {human_size(after)}", outs, srcs)
+    if action == 'tool:Telegram emoji':
+        return Result('Telegram emoji created',f'{o0.name} · WebM / VP9 · 100×100 · {human_size(after)}',outs,srcs)
+    if action == 'tool:Distort':
+        return Result('Distortion ready',f'{o0.name} · {human_size(after)}'+(f' · {extra}' if extra else ''),outs,srcs)
+
+    if category(src) == "audio" or (category(src) == "video" and category(o0) == "audio"):
+        from . import audio, video
+        try:
+            info = audio.probe(o0)
+        except Exception:
+            info = None
+        if kind == "convert":
+            title = f"{src.suffix[1:].upper()} → {name}" if len(outs) == 1 else f"{len(outs)} files → {name}"
+        else:
+            title = {"Trim": "Audio trimmed", "Edit": "Audio edited", "Normalize": "Audio normalized",
+                     "Fade": "Audio fades added", "Compress": "Audio compressed", "Reverse": "Audio reversed",
+                     "Metadata": "Audio metadata removed", "Extract": "Audio extracted", "Audio glitch":"Audio glitched"}.get(name, name)
+        bits = [o0.name]
+        if info:
+            bits += [video.time_text(info.duration), f"{info.sample_rate:,} Hz", f"{info.channels} ch"]
+        bits.append(human_size(after))
+        if extra:
+            bits.append(extra)
+        if name == "Compress":
+            sizes, good = size_change(before, after)
+            bits.append(sizes)
+        return Result(title, " · ".join(bits), outs, srcs, good=good)
+
+    if category(src) == "archive":
+        if kind == "convert":
+            title = f"{src.suffix[1:].upper()} → {name}" if len(outs) == 1 else f"{len(outs)} archives → {name}"
+            detail = f"{o0.name} · {human_size(after)}"
+        else:
+            title = "Archive extracted" if len(outs) == 1 else f"Extracted {len(outs)} archives"
+            detail = str(o0.name) + "/ · new folder"
+        return Result(title, detail, outs, srcs)
+
+    if category(src) == "video":
+        from .video import probe, time_text
+        info = None
+        if category(o0) == "video":
+            try:
+                info = probe(o0)
+            except Exception:
+                pass
+        if kind == "convert":
+            title = f"{src.suffix[1:].upper()} → {name}" if len(outs) == 1 else f"{len(outs)} files → {name}"
+        else:
+            title = {"Trim": "Video trimmed", "Compress": "Video compressed", "Resize": "Video resized",
+                     "Edit": "Video edited", "Mute": "Audio removed", "Frame": "Frame saved",
+                     "Metadata": "Video metadata removed", "Datamosh": "Datamosh transition created"}.get(name, name)
+        bits = [o0.name]
+        if info:
+            bits += [f"{info.width}×{info.height}", time_text(info.duration)]
+        bits.append(human_size(after))
+        if extra:
+            bits.append(extra)
+        if name == "Compress":
+            sizes, good = size_change(before, after)
+            bits.append(sizes)
+        return Result(title, " · ".join(bits), outs, srcs, good=good)
+
     if kind == "convert":
         fmt = name
+        if o0.is_dir() and src.suffix.lower() == '.gif':
+            count = sum(1 for out in outs for p in out.iterdir() if p.is_file())
+            return Result('Animation frames extracted',
+                          f'{count} frames · {fmt} · {o0.name}/', outs, srcs)
         if len(srcs) > 1 and len(outs) == 1:
             title = f"{len(srcs)} files → 1 {fmt}"
         elif len(outs) > 1 and len(srcs) == 1:

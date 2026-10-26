@@ -1,4 +1,4 @@
-name: Build Windows app
+name: Build desktop apps
 
 on:
   push:
@@ -7,6 +7,12 @@ on:
     paths-ignore: ["**.md", "docs/**"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      mac_intel_only:
+        description: Check Intel Mac only (reuse other platform results)
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: write
@@ -14,6 +20,7 @@ permissions:
 
 jobs:
   windows:
+    if: ${{ !inputs.mac_intel_only }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,8 +35,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller pytest
 
-      - name: Run tests
-        run: python -m pytest -q
+      - name: Stage and verify native media engines
+        run: python packaging/media_engines.py --stage
+
+      - name: Test all media engines and editors
+        run: python -m pytest -v -s --maxfail=1
         env:
           QT_QPA_PLATFORM: offscreen
 
@@ -47,8 +57,16 @@ jobs:
           QT_QPA_PLATFORM: offscreen
         run: |
           foreach ($exe in @("dist\DragShift\DragShift.exe", "dist\DragShift.exe")) {
-            $p = Start-Process -FilePath $exe -ArgumentList "--selftest" -Wait -PassThru
-            if ($p.ExitCode -ne 0) { throw "Self-test failed for $exe ($($p.ExitCode))" }
+            foreach ($language in @('en', 'ru')) {
+              $env:DRAGSHIFT_LANGUAGE = $language
+              foreach ($flag in @('--selftest', '--files-selftest')) {
+                $p = Start-Process -FilePath $exe -ArgumentList $flag -Wait -PassThru
+                if ($p.ExitCode -ne 0) {
+                  Get-Content -LiteralPath "$env:LOCALAPPDATA\DragShift\log.txt" -Tail 160 -ErrorAction Continue
+                  throw "$language $flag failed for $exe ($($p.ExitCode))"
+                }
+              }
+            }
             "Self-test passed: $exe"
           }
           "{0:N1} MB portable" -f ((Get-Item dist\DragShift.exe).Length / 1MB)
@@ -68,14 +86,17 @@ jobs:
       - name: Test the installer (silent install, run, uninstall)
         shell: pwsh
         run: |
-          $p = Start-Process dist\DragShift-Setup.exe -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /TASKS=contextmenu" -Wait -PassThru
+          $p = Start-Process dist\DragShift-Setup.exe -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LANG=ru /TASKS=contextmenu" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "Install failed ($($p.ExitCode))" }
           $app = "$env:LOCALAPPDATA\Programs\DragShift\DragShift.exe"
           if (-not (Test-Path $app)) { throw "App not installed" }
           if (-not (Test-Path "HKCU:\Software\Classes\*\shell\DragShift\command")) { throw "Context menu not registered" }
+          if ((Get-ItemProperty 'HKCU:\Software\DragShift\DragShift').language -ne 'ru') { throw 'Russian installation language was not saved' }
           $env:QT_QPA_PLATFORM = "offscreen"
           $t = Start-Process $app -ArgumentList "--selftest" -Wait -PassThru
           if ($t.ExitCode -ne 0) { throw "Installed app self-test failed" }
+          $t = Start-Process $app -ArgumentList "--files-selftest" -Wait -PassThru
+          if ($t.ExitCode -ne 0) { throw "Installed media self-test failed" }
           Remove-Item Env:QT_QPA_PLATFORM
           $u = Start-Process "$env:LOCALAPPDATA\Programs\DragShift\unins000.exe" -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES" -Wait -PassThru
           Start-Sleep 3
@@ -125,11 +146,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: macos-15
-            arch: apple-silicon
-          - runner: macos-15-intel
-            arch: intel
+        # The optional isolated retry does not rebuild successful Windows/Linux/ARM packages.
+        # Intel needs the full codec set and an official Intel bottle; plain ffmpeg omits Vorbis.
+        include: ${{ fromJSON(inputs.mac_intel_only && '[{"runner":"macos-15-intel","arch":"intel","ffmpeg_formula":"ffmpeg@7"}]' || '[{"runner":"macos-15","arch":"apple-silicon","ffmpeg_formula":"ffmpeg-full"},{"runner":"macos-15-intel","arch":"intel","ffmpeg_formula":"ffmpeg@7"}]') }}
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -142,21 +161,83 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller pytest
+          # Avoid expensive sdist metadata generation before pip falls back
+          # to the same compatible PyMuPDF wheel used by the native checks.
+          pip install -r requirements.txt pyinstaller pytest --only-binary=pymupdf
+
+      - name: Stage native media engines (including Liquid Rescale)
+        env:
+          FFMPEG_FORMULA: ${{ matrix.ffmpeg_formula }}
+        run: |
+          brew install "$FFMPEG_FORMULA" sevenzip pkgconf liblqr libpng
+          # Both formulae are keg-only; select their binaries without relinking
+          # or accidentally staging a preinstalled, reduced-codec ffmpeg.
+          export PATH="$(brew --prefix "$FFMPEG_FORMULA")/bin:$PATH"
+          export PKG_CONFIG_PATH="$(brew --prefix liblqr)/lib/pkgconfig:$(brew --prefix libpng)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+          python packaging/media_engines.py --stage
 
       - name: Run tests
-        run: python -m pytest -q
+        run: python -m pytest -v -s --maxfail=1
         env:
           QT_QPA_PLATFORM: offscreen
 
       - name: Build DragShift.app
         run: pyinstaller DragShift.spec --noconfirm
 
+      - name: Check relocated media engines before app startup
+        timeout-minutes: 3
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import subprocess, tempfile, time
+          engines = Path('dist/DragShift.app/Contents/Frameworks/bin').resolve()
+          def check(args):
+              started = time.monotonic()
+              proc = subprocess.Popen([str(arg) for arg in args], stdin=subprocess.DEVNULL,
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+              try:
+                  out, err = proc.communicate(timeout=25)
+              except subprocess.TimeoutExpired:
+                  # A sample distinguishes dyld/signature startup delays from
+                  # codec/thread hangs; never turn a hang into a passing check.
+                  try:
+                      sample = subprocess.run(['sample', str(proc.pid), '2', '1'],
+                                              capture_output=True, text=True, timeout=10)
+                      # Keep the call graph, not the huge Binary Images appendix.
+                      print(sample.stdout.split('Binary Images:', 1)[0][:26000]
+                            + sample.stderr[-2000:], flush=True)
+                  finally:
+                      proc.kill()
+                      out, err = proc.communicate()
+                      print(err.decode('utf-8', 'replace')[-4000:], flush=True)
+                  raise
+              print(Path(args[0]).name, args[1:4],
+                    f'{time.monotonic() - started:.3f}s, exit {proc.returncode}', flush=True)
+              print((out + err).decode('utf-8', 'replace')[:1200], flush=True)
+              assert proc.returncode == 0
+          for name in ('ffmpeg', 'ffprobe'):
+              check([engines / name, '-version'])
+          with tempfile.TemporaryDirectory(prefix='dragshift-bundle-check-') as folder:
+              output = Path(folder) / 'check.mp4'
+              check([engines / 'ffmpeg', '-v', 'error', '-nostdin', '-f', 'lavfi', '-i',
+                     'testsrc2=size=160x120:rate=24:duration=2', '-f', 'lavfi', '-i',
+                     'sine=frequency=440:duration=2', '-c:v', 'libx264', '-pix_fmt',
+                     'yuv420p', '-c:a', 'aac', '-y', output])
+              check([engines / 'ffprobe', '-v', 'error', '-show_entries',
+                     'format=duration', '-of', 'default=nw=1', output])
+          PY
+
       - name: Self-test the app bundle
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
+          # Windowed bundles write Python diagnostics to the application log.
+          # Preserve that evidence when a frozen-only check fails on a runner.
+          trap 'rc=$?; if [ "$rc" -ne 0 ]; then tail -n 160 "$HOME/Library/Logs/DragShift/log.txt" || true; fi; exit "$rc"' EXIT
           dist/DragShift.app/Contents/MacOS/DragShift --selftest
+          for language in en ru; do
+            DRAGSHIFT_LANGUAGE=$language dist/DragShift.app/Contents/MacOS/DragShift --files-selftest
+          done
           codesign --verify --deep --verbose=2 dist/DragShift.app || true
           /usr/libexec/PlistBuddy -c "Print :LSUIElement" dist/DragShift.app/Contents/Info.plist
 
@@ -211,6 +292,7 @@ jobs:
           path: dist/DragShift-mac-${{ matrix.arch }}.dmg
 
   linux:
+    if: ${{ !inputs.mac_intel_only }}
     # Built on Debian 12 (glibc 2.36): the .deb runs on Debian 12/13, Ubuntu 23.04+, Mint 22, MX 23…
     runs-on: ubuntu-latest
     container: debian:12
@@ -225,7 +307,8 @@ jobs:
             libxcb-shape0 libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1 libfontconfig1 libfreetype6 \
             libdbus-1-3 libegl1 libgl1 libglib2.0-0 \
             xvfb xfwm4 thunar xdotool dbus-x11 ffmpeg feh fonts-dejavu-core fonts-noto-core \
-            desktop-file-utils hicolor-icon-theme xdg-utils
+            desktop-file-utils hicolor-icon-theme xdg-utils \
+            build-essential pkg-config libpng-dev liblqr-1-0-dev libglib2.0-dev p7zip-full
 
       - uses: actions/checkout@v4
 
@@ -239,17 +322,20 @@ jobs:
           VIRTUAL_ENV=/opt/venv /opt/uv/bin/uv pip install -q -r requirements.txt pyinstaller pytest
           /opt/venv/bin/python --version
 
+      - name: Stage native media engines (including Liquid Rescale)
+        run: /opt/venv/bin/python packaging/media_engines.py --stage
+
       - name: Run tests
         env:
           QT_QPA_PLATFORM: offscreen
-        run: /opt/venv/bin/python -m pytest -q
+        run: /opt/venv/bin/python -m pytest -v -s --maxfail=1
 
       - name: Build the app folder
         run: /opt/venv/bin/pyinstaller DragShift.spec --noconfirm
 
       - name: Build the .deb
         run: |
-          PATH=/opt/venv/bin:$PATH packaging/linux/build-deb.sh 1.2.0
+          PATH=/opt/venv/bin:$PATH packaging/linux/build-deb.sh 1.1.0+files.8
           dpkg-deb --info dist/DragShift-linux-amd64.deb
           desktop-file-validate packaging/linux/dragshift.desktop
 
@@ -277,6 +363,9 @@ jobs:
             tail -25 e2e_linux_out/selftest.txt | sed 's/%/%25/g' | while IFS= read -r l; do echo "::error title=selftest::$l"; done
             exit $rc
           fi
+          for language in en ru; do
+            DRAGSHIFT_LANGUAGE=$language dragshift --files-selftest
+          done
 
       - name: End-to-end on XFCE (Xvfb + xfwm4 with compositor off + Thunar)
         run: |
@@ -352,8 +441,6 @@ jobs:
 
             **Linux** (Debian 12+, Ubuntu 23.04+, Mint, MX… on X11 desktops such as XFCE, MATE, Cinnamon):
             - **DragShift-linux-amd64.deb** — install with `sudo apt install ./DragShift-linux-amd64.deb`, then open DragShift from the app menu. Works with or without a compositor.
-
-            Enjoying DragShift? Tips are welcome: [Cash App $AtikaKadesha](https://cash.app/$AtikaKadesha) ♥
 
             Built automatically from commit ${{ github.sha }}.
           files: out/*
