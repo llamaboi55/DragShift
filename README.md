@@ -39,7 +39,7 @@ Open **DragShift** from the app menu. It sits in the panel's notification area, 
 >
 > **First launch on Mac, if you used the .dmg instead of the Terminal line:** macOS says *"Apple could not verify 'DragShift' is free of malware."* This happens with any app that hasn't paid for Apple's notarization; DragShift's code is all public in this repo. To open it:
 > 1. Open DragShift once and click **Done** on the warning.
-> 2. Go to  → **System Settings → Privacy & Security**, scroll down to *"DragShift was blocked…"* and click **Open Anyway**. Enter your password and confirm.
+> 2. Go to **System Settings → Privacy & Security**, scroll down to *"DragShift was blocked…"* and click **Open Anyway**. Enter your password and confirm.
 > 3. That's it. macOS remembers the choice.
 >
 > Or, in Terminal: `xattr -dr com.apple.quarantine /Applications/DragShift.app`
