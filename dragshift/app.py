@@ -43,7 +43,7 @@ HINTS = {
 FORMAT_HINTS = {"JPG": "Small, universal", "PNG": "Lossless · transparency", "WEBP": "Smallest for web",
                 "HEIC": "iPhone format", "TIFF": "Print · archival", "AVIF": "Next-gen, tiny",
                 "BMP": "Uncompressed", "PDF": "Document", "ICO": "Windows icon", "GIF": "Legacy web",
-                "DOCX": "Editable Word", "TXT": "Plain text",
+                "DOCX": "Editable Word", "TXT": "Plain text", "MD": "Markdown",
                 "ZIP": "Compressed archive", "TAR.GZ": "gzip tarball (Linux)"}
 
 IMAGE_TOOLS = ["Compress", "Resize", "Crop", "Edit", "Annotate", "Redact", "Add BG", "Metadata"]
@@ -525,6 +525,7 @@ def selftest() -> int:
             (Path(d) / "n.txt").write_text("hello")
             docx = convert.convert(Path(d) / "n.txt", "text", "DOCX")[0]
             convert.convert(docx, "docx", "TXT")
+            convert.convert(docx, "docx", "MD")
             sub = Path(d) / "folder"
             sub.mkdir()
             (sub / "a.txt").write_text("hi")

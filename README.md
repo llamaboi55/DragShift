@@ -63,9 +63,9 @@ You can also right-click a file → **DragShift…**, use **Send to → DragShif
 | File | Convert to | Tools |
 |---|---|---|
 | Images (JPG, PNG, WEBP, HEIC, AVIF, TIFF, BMP, GIF, ICO) | Any of those, or PDF. Several images become one combined PDF | **Compress** (by quality or to a target size such as "under 500 KB", with a before/after preview, several files at once) · **Resize** · **Crop** (ratios, live pixel size, rotate) · **Edit** (Auto, light/colour, rotate, flip, B&W, hold to compare) · **Annotate** (arrows, boxes, numbered steps, text, marker) · **Redact** · **Add BG** · **Metadata** (camera, date, GPS location with a map link; remove location only or remove everything) |
-| PDF | JPG or PNG (one per page), DOCX, TXT | Compress · Split · Rotate · Merge (drop several) · **Protect** (AES-256 password) · **Extract images** · Metadata |
-| Word (.docx) | PDF (uses Microsoft Word if it's installed, otherwise a built-in renderer), TXT | — |
-| Text (.txt, .md, .csv…) | PDF, DOCX | — |
+| PDF | JPG or PNG (one per page), DOCX, TXT, Markdown | Compress · Split · Rotate · Merge (drop several) · **Protect** (AES-256 password) · **Extract images** · Metadata |
+| Word (.docx) | PDF (uses Microsoft Word if it's installed, otherwise a built-in renderer), TXT, Markdown (headings, bold/italic, lists, tables) | — |
+| Text (.txt, .md, .csv…) | PDF, DOCX, Markdown (.csv becomes a table, .json/.xml/.html/.log go in a code block) | — |
 
 **Settings** (tray menu): trigger key (Shift, Ctrl or Alt), where results go (next to the original or a `DragShift` subfolder), JPG/WebP quality, PDF → image resolution, and start at login.
 
