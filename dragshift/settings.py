@@ -234,9 +234,10 @@ class WelcomeWindow(GlassWindow):
                 b.clicked.connect(platform_mac.request_screen_recording)
                 self.body.addWidget(b, 0, Qt.AlignLeft)
         if IS_LINUX:
-            from . import platform_linux
-            if platform_linux.is_wayland():
-                note = QLabel("You're on a Wayland session: the Shift-while-dragging trigger needs X11 (e.g. XFCE). "
+            from . import platform_wayland
+            if platform_wayland.is_wayland() and not platform_wayland.ready():
+                note = QLabel("Wayland: the Shift-while-dragging trigger isn't available. "
+                              f"{platform_wayland.setup_problem()} "
                               "Right-click a file → Open With → DragShift still works.")
                 note.setObjectName("warn")
                 note.setWordWrap(True)

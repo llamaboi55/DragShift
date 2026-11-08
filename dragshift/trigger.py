@@ -2,7 +2,8 @@
 is what a Shift+drag of a file looks like. Polling global input state is simple, needs no
 admin rights and can't stall the system the way a broken hook can.
 Windows: GetAsyncKeyState. macOS: NSEvent.pressedMouseButtons / modifierFlags (no
-Accessibility or Input Monitoring permission required)."""
+Accessibility or Input Monitoring permission required). Linux: X11 pointer state, or the
+kernel input devices on Wayland (see platform_wayland)."""
 from __future__ import annotations
 
 import ctypes
@@ -39,9 +40,14 @@ class DragShiftWatcher(QObject):
             from . import platform_mac
             self._mac = platform_mac if platform_mac.OK else None
         elif sys.platform.startswith("linux"):
-            from . import platform_linux
+            from . import platform_linux, platform_wayland
             # same interface as platform_mac: left_button_down / key_down / escape_down
-            self._mac = platform_linux if platform_linux.available() else None
+            if platform_wayland.is_wayland():
+                self._mac = platform_wayland if platform_wayland.ready() else None
+            else:
+                self._mac = platform_linux if platform_linux.available() else None
+        # where the cursor is; on Wayland only relative travel is known
+        self._pointer = getattr(self._mac, "pointer", QCursor.pos)
         self.timer = QTimer(self, interval=15, timeout=self._tick)
 
     def set_key(self, name: str):
@@ -64,7 +70,7 @@ class DragShiftWatcher(QObject):
 
     def _tick(self):
         lbtn, shift, esc = self._state()
-        pos = QCursor.pos()
+        pos = self._pointer()
 
         if self.menu_visible():
             if not lbtn or esc:
