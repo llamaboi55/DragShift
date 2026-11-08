@@ -397,24 +397,32 @@ def _word_to_pdf(src: Path, out: Path) -> bool:
 
 CSS = """
 * { font-family: sans-serif; }
-body { font-size: 11pt; line-height: 1.35; }
-h1 { font-size: 20pt; } h2 { font-size: 16pt; } h3 { font-size: 13pt; }
-p { margin: 0 0 6pt 0; }
-pre { font-family: monospace; font-size: 9.5pt; white-space: pre-wrap; }
-table { border-collapse: collapse; margin: 6pt 0; }
-td { border: 1px solid #888; padding: 3pt 5pt; font-size: 10pt; }
+body { font-size: 11pt; line-height: 1.5; color: #37352f; }
+h1 { font-size: 26pt; font-weight: bold; color: #111111; margin: 0 0 12pt 0; }
+h2 { font-size: 16pt; font-weight: bold; color: #111111; margin: 16pt 0 6pt 0; }
+h3 { font-size: 13pt; font-weight: bold; color: #111111; margin: 12pt 0 4pt 0; }
+p { margin: 0 0 8pt 0; }
+ul, ol { margin: 0 0 8pt 0; }
+li { margin: 2pt 0; }
+strong, b { font-weight: bold; }
+pre { font-family: monospace; font-size: 9.5pt; background-color: #f7f6f3; padding: 8pt; white-space: pre-wrap; margin: 0 0 8pt 0; }
+code { font-family: monospace; font-size: 9.5pt; color: #eb5757; background-color: #f1f0ee; }
+table { border-collapse: collapse; margin: 8pt 0; }
+th { border: 1px solid #e3e2e0; padding: 6pt 8pt; text-align: left; font-weight: bold; font-size: 10pt; }
+td { border: 1px solid #e3e2e0; padding: 6pt 8pt; text-align: left; font-size: 10pt; }
 """
 
 
 def html_to_pdf(body_html: str | list[str], out: Path, *, base: Path | None = None,
-                landscape: bool = False, extra_css: str = "") -> None:
+                landscape: bool = False, extra_css: str = "", footer: str = "") -> None:
     """A list of strings makes one section each, always starting on a fresh page (slides, sheets).
-    `base` is the folder relative images are loaded from."""
+    `base` is the folder relative images are loaded from. `footer`, if given, prints a grey
+    document title + page number along the bottom of every page (Notion-style)."""
     chunks = body_html if isinstance(body_html, list) else [body_html]
     archive = fitz.Archive(str(base)) if base else None
     writer = fitz.DocumentWriter(str(out))
     mediabox = fitz.paper_rect("letter-l" if landscape else "letter")
-    where = mediabox + (54, 54, -54, -54)
+    where = mediabox + (54, 54, -54, -72 if footer else -54)
     for chunk in chunks:
         story = fitz.Story(html=chunk, user_css=CSS + extra_css, archive=archive)
         more = True
@@ -424,6 +432,32 @@ def html_to_pdf(body_html: str | list[str], out: Path, *, base: Path | None = No
             story.draw(dev)
             writer.end_page()
     writer.close()
+    if footer:
+        _stamp_footer(out, footer)
+
+
+def _stamp_footer(out: Path, title: str) -> None:
+    """Grey document title (left) + 'n / total' (right) in each page's bottom margin."""
+    doc = fitz.open(str(out))
+    try:
+        total = doc.page_count
+        if len(title) > 90:
+            title = title[:89] + "\u2026"
+        css = "*{font-family:sans-serif;font-size:8pt;color:#9b9a97;}"
+        for i, pg in enumerate(doc):
+            r = pg.rect
+            box = fitz.Rect(54, r.height - 48, r.width - 54, r.height - 28)
+            html_ft = ("<table style='width:100%'><tr>"
+                       f"<td style='text-align:left'>{html.escape(title)}</td>"
+                       f"<td style='text-align:right'>{i + 1} / {total}</td>"
+                       "</tr></table>")
+            try:
+                pg.insert_htmlbox(box, html_ft, css=css)
+            except Exception:
+                pass
+        doc.saveIncr()
+    finally:
+        doc.close()
 
 
 def docx_to_pdf(src: str | Path) -> list[Path]:

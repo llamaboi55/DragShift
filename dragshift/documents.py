@@ -483,9 +483,22 @@ def _write_text(out: Path, text: str, encoding: str = "utf-8") -> None:
 
 
 # ---------------------------------------------------------------- Markdown / HTML / plain text
+def _fix_tight_lists(text: str) -> str:
+    """Notion-lenient: a bullet/number list that starts on the line right after a
+    paragraph still becomes a list. python-markdown needs a blank line before it."""
+    item = re.compile(r"^\s*([-*+]|\d+\.)\s+")
+    lines: list[str] = []
+    for ln in text.split("\n"):
+        if item.match(ln) and lines and lines[-1].strip() and not item.match(lines[-1]):
+            lines.append("")
+        lines.append(ln)
+    return "\n".join(lines)
+
+
 def _md_to_html_body(src: Path) -> str:
     import markdown
-    return markdown.markdown(cv.read_text(src), extensions=["tables", "fenced_code", "sane_lists", "nl2br"])
+    return markdown.markdown(_fix_tight_lists(cv.read_text(src)),
+                             extensions=["tables", "fenced_code", "sane_lists", "nl2br"])
 
 
 def _markup_html(src: Path, cat: str) -> str:
@@ -500,7 +513,10 @@ def _markup_html(src: Path, cat: str) -> str:
 
 def markup_to_pdf(src: Path, cat: str) -> list[Path]:
     out = sibling(src, ext=".pdf")
-    cv.html_to_pdf(_markup_html(src, cat), out, base=src.parent)
+    body = _markup_html(src, cat)
+    m = re.search(r"<h1[^>]*>(.*?)</h1>", body, re.I | re.S)
+    title = re.sub(r"<[^>]+>", "", m.group(1)).strip() if m else src.stem
+    cv.html_to_pdf(body, out, base=src.parent, footer=title or src.stem)
     return [out]
 
 

@@ -319,3 +319,24 @@ def test_existing_text_and_docx_conversions_unchanged(tmp_path):
     docx = convert.convert(t, "text", "DOCX")[0]
     assert convert.targets_for("docx", ".docx")[:2] == ["PDF", "TXT"]
     assert convert.convert(docx, "docx", "TXT")[0].read_text().strip() == "hello"
+
+
+def test_md_tight_list_becomes_bullets():
+    """A list right after a paragraph (no blank line) still renders as a list, like Notion."""
+    html = documents._fix_tight_lists("Intro line:\n- one\n- two\n")
+    import markdown
+    out = markdown.markdown(html, extensions=["tables", "fenced_code", "sane_lists", "nl2br"])
+    assert "<ul>" in out and out.count("<li>") == 2
+
+
+def test_md_to_pdf_has_footer_and_title(tmp_path):
+    src = tmp_path / "Report.md"
+    src.write_text("# My Title\n\nBody paragraph.\n\n## Section\nText.\n", encoding="utf-8")
+    pdf = convert.convert(src, "markdown", "PDF")[0]
+    doc = convert.fitz.open(pdf)
+    try:
+        text = doc[0].get_text()
+        # footer carries the H1 title and a page number
+        assert "My Title" in text and "1 / 1" in text
+    finally:
+        doc.close()
