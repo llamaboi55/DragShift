@@ -43,7 +43,8 @@ HINTS = {
 FORMAT_HINTS = {"JPG": "Small, universal", "PNG": "Lossless · transparency", "WEBP": "Smallest for web",
                 "HEIC": "iPhone format", "TIFF": "Print · archival", "AVIF": "Next-gen, tiny",
                 "BMP": "Uncompressed", "PDF": "Document", "ICO": "Windows icon", "GIF": "Legacy web",
-                "DOCX": "Editable Word", "TXT": "Plain text"}
+                "DOCX": "Editable Word", "TXT": "Plain text",
+                "ZIP": "Compressed archive", "TAR.GZ": "gzip tarball (Linux)"}
 
 IMAGE_TOOLS = ["Compress", "Resize", "Crop", "Edit", "Annotate", "Redact", "Add BG", "Metadata"]
 PDF_TOOLS = ["Compress", "Split", "Rotate", "Protect", "Extract", "Metadata"]
@@ -230,13 +231,21 @@ class DragShiftApp(QObject):
     # ------------------------------------------------------------ menu contents
     def describe(self, paths: list[str]) -> str:
         if len(paths) > 1:
+            if any(os.path.isdir(p) for p in paths):
+                return f"{len(paths)} items"
             return f"{len(paths)} files"
+        if os.path.isdir(paths[0]):
+            return Path(paths[0]).name
         return human_size(file_size(paths[0]))
 
     def build_rings(self, paths: list[str]) -> dict[str, list[Item]]:
         cat = category(paths[0])
         if cat is None:
             return {"Unsupported": []}
+        if cat == "folder":
+            items = [Item(t, key=f"archive:{t}", hint=FORMAT_HINTS.get(t, ""))
+                     for t in convert.targets_for("folder", "")]
+            return {"Archive": items}
         ext = Path(paths[0]).suffix
         same = [p for p in paths if category(p) == cat]
         convert_items = []
@@ -258,6 +267,12 @@ class DragShiftApp(QObject):
         cat = category(paths[0])
         paths = [p for p in paths if category(p) == cat]
         kind, name = item.key.split(":", 1)
+        if cat == "folder":
+            if kind == "archive":
+                self.submit(f"archive:{name}", paths,
+                            lambda: [o for p in paths for o in convert.archive_folder(p, name)],
+                            f"Archiving to {name}…")
+            return
         if kind == "convert":
             if cat == "image" and name == "PDF" and len(paths) > 1:
                 self.submit(f"convert:{name}", paths, lambda: convert.images_to_single_pdf(paths),
@@ -510,6 +525,11 @@ def selftest() -> int:
             (Path(d) / "n.txt").write_text("hello")
             docx = convert.convert(Path(d) / "n.txt", "text", "DOCX")[0]
             convert.convert(docx, "docx", "TXT")
+            sub = Path(d) / "folder"
+            sub.mkdir()
+            (sub / "a.txt").write_text("hi")
+            for t in convert.FOLDER_TARGETS:
+                convert.archive_folder(sub, t)
             imaging.add_background(convert.open_image(src), imaging.Background())
             imaging.compress_pdf(pdf)
             imaging.protect_pdf(pdf, "pw")

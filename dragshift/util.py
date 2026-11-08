@@ -12,6 +12,8 @@ TEXT_EXTS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".html", ".htm"}
 
 
 def category(path: str | Path) -> str | None:
+    if os.path.isdir(path):
+        return "folder"
     ext = Path(path).suffix.lower()
     if ext in IMAGE_EXTS:
         return "image"

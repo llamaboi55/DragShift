@@ -113,3 +113,34 @@ def test_shortcut_resolves_to_target(img, tmp_path):
     out = resolve_shortcuts([str(lnk)])
     assert Path(out[0]) == img and category(out[0]) == "image"
     assert resolve_shortcuts([str(img)]) == [str(img)]
+
+
+def test_archive_folder(tmp_path):
+    from dragshift.util import category
+    import zipfile, tarfile
+    folder = tmp_path / "My Project"
+    folder.mkdir()
+    (folder / "readme.txt").write_text("hello world " * 100)
+    (folder / "sub").mkdir()
+    (folder / "sub" / "data.csv").write_text("a,b,c\n1,2,3\n")
+    (folder / "empty").mkdir()
+
+    assert category(folder) == "folder"
+    assert convert.targets_for("folder", "") == ["ZIP", "TAR.GZ"]
+
+    zf = convert.archive_folder(folder, "ZIP")[0]
+    assert zf.exists() and zf.suffix == ".zip"
+    with zipfile.ZipFile(zf) as z:
+        names = z.namelist()
+    assert "My Project/readme.txt" in names
+    assert "My Project/sub/data.csv" in names
+
+    tf = convert.archive_folder(folder, "TAR.GZ")[0]
+    assert tf.exists() and tf.name.endswith(".tar.gz")
+    with tarfile.open(tf) as t:
+        tnames = t.getnames()
+    assert "My Project/readme.txt" in tnames
+
+    # second ZIP must not overwrite the first
+    zf2 = convert.archive_folder(folder, "ZIP")[0]
+    assert zf2 != zf and zf2.exists()

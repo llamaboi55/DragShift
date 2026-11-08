@@ -5,11 +5,13 @@ from __future__ import annotations
 import html
 import io
 import sys
+import tarfile
+import zipfile
 from pathlib import Path
 
 from PIL import Image, ImageOps
 
-from .util import UserError, sibling
+from .util import UserError, output_dir, sibling, unique_path
 
 try:  # HEIC / HEIF support
     import pillow_heif
@@ -27,6 +29,7 @@ IMAGE_TARGETS = ["PNG", "JPG", "WEBP", "HEIC", "TIFF", "AVIF", "BMP", "PDF", "IC
 PDF_TARGETS = ["JPG", "PNG", "DOCX", "TXT"]
 DOCX_TARGETS = ["PDF", "TXT"]
 TEXT_TARGETS = ["PDF", "DOCX"]
+FOLDER_TARGETS = ["ZIP", "TAR.GZ"]
 
 PIL_FORMAT = {"PNG": "PNG", "JPG": "JPEG", "WEBP": "WEBP", "HEIC": "HEIF", "TIFF": "TIFF",
               "AVIF": "AVIF", "BMP": "BMP", "PDF": "PDF", "ICO": "ICO", "GIF": "GIF"}
@@ -362,7 +365,8 @@ def targets_for(cat: str, src_ext: str) -> list[str]:
         if not HEIF_OK:
             t = [x for x in t if x != "HEIC"]
         return t
-    return {"pdf": PDF_TARGETS, "docx": DOCX_TARGETS, "text": TEXT_TARGETS}.get(cat, [])
+    return {"pdf": PDF_TARGETS, "docx": DOCX_TARGETS, "text": TEXT_TARGETS,
+            "folder": FOLDER_TARGETS}.get(cat, [])
 
 
 def convert(src: str | Path, cat: str, target: str) -> list[Path]:
@@ -381,3 +385,50 @@ def convert(src: str | Path, cat: str, target: str) -> list[Path]:
     if cat == "text":
         return text_to_pdf(src) if target == "PDF" else text_to_docx(src)
     raise ValueError(f"Can't convert {cat} to {target}")
+
+
+# ---------------------------------------------------------------- folders
+def _archive_out(src: Path, ext: str) -> Path:
+    """A free output name next to the folder (honours Settings -> Save results)."""
+    d = output_dir(src)
+    cand = d / (src.name + ext)
+    i = 1
+    while cand.exists():
+        cand = d / f"{src.name} ({i}){ext}"
+        i += 1
+    return cand
+
+
+def archive_folder(src: str | Path, target: str) -> list[Path]:
+    """Zip (or tar.gz) a folder into a single archive beside it. The folder itself
+    becomes the top-level entry, so it unpacks back into one tidy folder."""
+    src = Path(src)
+    if not src.is_dir():
+        raise UserError("That isn't a folder.")
+    target = target.upper().replace(".", "").replace("-", "")
+
+    if target == "ZIP":
+        out = _archive_out(src, ".zip")
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+            wrote = False
+            for p in sorted(src.rglob("*")):
+                if p.is_symlink():
+                    continue
+                rel = f"{src.name}/{p.relative_to(src).as_posix()}"
+                if p.is_file():
+                    z.write(p, rel)
+                    wrote = True
+                elif p.is_dir() and not any(p.iterdir()):
+                    z.writestr(rel + "/", "")  # keep empty folders
+            if not wrote and not z.namelist():
+                z.writestr(f"{src.name}/", "")
+        return [out]
+
+    if target in ("TARGZ", "TGZ"):
+        out = _archive_out(src, ".tar.gz")
+        with tarfile.open(out, "w:gz") as t:
+            t.add(src, arcname=src.name,
+                  filter=lambda ti: None if ti.issym() or ti.islnk() else ti)
+        return [out]
+
+    raise UserError(f"Can't archive a folder to {target}.")

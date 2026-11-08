@@ -2,6 +2,7 @@
 sizes saved, new dimensions, pages, fields removed…"""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -59,6 +60,19 @@ def _dim_str(d) -> str:
     return f"{d[0]}×{d[1]}" if d else ""
 
 
+def _tree_size(paths: list) -> int:
+    total = 0
+    for s in paths:
+        s = Path(s)
+        if s.is_dir():
+            for root, _dirs, files in os.walk(s):
+                for f in files:
+                    total += file_size(os.path.join(root, f))
+        elif s.is_file():
+            total += file_size(s)
+    return total
+
+
 def summarize(action: str, srcs: list, outs: list, extra: str = "") -> Result:
     srcs = [Path(s) for s in srcs]
     outs = [Path(o) for o in outs if o]
@@ -70,6 +84,13 @@ def summarize(action: str, srcs: list, outs: list, extra: str = "") -> Result:
     kind, _, name = action.partition(":")
     o0 = outs[0]
     good = ""
+
+    if kind == "archive":
+        before = _tree_size(srcs)
+        after = sum(file_size(o) for o in outs if o.is_file())
+        sizes, verdict = size_change(before, after)
+        title = f"Archived {src.name}" if len(srcs) == 1 else f"Archived {len(srcs)} folders"
+        return Result(title, f"{name} · {sizes} · {o0.name}", outs, srcs, good=verdict)
 
     if kind == "convert":
         fmt = name
