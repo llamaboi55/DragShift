@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -112,12 +113,39 @@ def lo_available() -> bool:
 _LO_LOCK = threading.Lock()  # one LibreOffice at a time: they share a profile
 
 
+def _lo_profile() -> Path:
+    """A private, per-user LibreOffice profile directory.
+
+    Never the shared system temp dir: a fixed, predictable name there (e.g.
+    /tmp/dragshift-lo-profile) lets another local user pre-create the path, or
+    point it at a symlink, and feed LibreOffice an attacker-controlled profile
+    (macro/config injection, symlink attacks) — a local privilege-escalation
+    vector on multi-user hosts. Keep it under the user's own cache dir, 0700,
+    and fall back to a fresh private dir if an existing one looks tampered with.
+    """
+    base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "dragshift"
+    base.mkdir(mode=0o700, parents=True, exist_ok=True)
+    profile = base / "lo-profile"
+    if os.name == "posix":
+        try:
+            st = profile.lstat()
+        except FileNotFoundError:
+            st = None
+        if st is not None and (stat.S_ISLNK(st.st_mode)
+                               or st.st_uid != os.getuid()
+                               or (st.st_mode & 0o077)):
+            # foreign owner, a symlink, or group/world-accessible: don't trust it
+            return Path(tempfile.mkdtemp(prefix="dragshift-lo-"))
+    profile.mkdir(mode=0o700, exist_ok=True)
+    return profile
+
+
 def _lo_run(src: Path, fmt: str, ext: str, outdir: Path) -> Path:
     """Convert with a headless LibreOffice into `outdir` and return the file it wrote."""
     exe = find_soffice()
     if not exe:
         raise UserError("This conversion needs LibreOffice. Install it from libreoffice.org.")
-    profile = Path(tempfile.gettempdir()) / "dragshift-lo-profile"  # never touches the user's own profile
+    profile = _lo_profile()
     cmd = [exe, "--headless", "--norestore", "--nolockcheck", "--nologo", "--nodefault",
            f"-env:UserInstallation={profile.as_uri()}", "--convert-to", fmt, "--outdir", str(outdir),
            str(src)]
