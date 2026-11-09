@@ -5,11 +5,13 @@ from __future__ import annotations
 import html
 import io
 import sys
+import tarfile
+import zipfile
 from pathlib import Path
 
 from PIL import Image, ImageOps
 
-from .util import UserError, sibling
+from .util import UserError, output_dir, sibling, unique_path
 
 try:  # HEIC / HEIF support
     import pillow_heif
@@ -24,9 +26,10 @@ except ImportError:  # pragma: no cover
     import fitz  # type: ignore
 
 IMAGE_TARGETS = ["PNG", "JPG", "WEBP", "HEIC", "TIFF", "AVIF", "BMP", "PDF", "ICO", "GIF"]
-PDF_TARGETS = ["JPG", "PNG", "DOCX", "TXT"]
-DOCX_TARGETS = ["PDF", "TXT"]
-TEXT_TARGETS = ["PDF", "DOCX"]
+PDF_TARGETS = ["JPG", "PNG", "DOCX", "TXT", "MD"]
+DOCX_TARGETS = ["PDF", "TXT", "MD"]
+TEXT_TARGETS = ["PDF", "DOCX", "MD"]
+FOLDER_TARGETS = ["ZIP", "TAR.GZ"]
 
 PIL_FORMAT = {"PNG": "PNG", "JPG": "JPEG", "WEBP": "WEBP", "HEIC": "HEIF", "TIFF": "TIFF",
               "AVIF": "AVIF", "BMP": "BMP", "PDF": "PDF", "ICO": "ICO", "GIF": "GIF"}
@@ -213,6 +216,39 @@ def pdf_to_docx(src: str | Path) -> list[Path]:
     return [out]
 
 
+def pdf_to_md(src: str | Path) -> list[Path]:
+    """Large text becomes # / ## headings, short bold lines become bold, pages are split by a rule."""
+    pages = []
+    with open_pdf(src) as doc:
+        for page in doc:
+            paras = []
+            for b in page.get_text("dict")["blocks"]:
+                if b.get("type") != 0:
+                    continue
+                lines, size, bold = [], 0.0, False
+                for ln in b["lines"]:
+                    spans = ln["spans"]
+                    if spans:
+                        size = max(size, max(s["size"] for s in spans))
+                        bold = bold or any("Bold" in s["font"] for s in spans)
+                    lines.append("".join(s["text"] for s in spans).strip())
+                txt = " ".join(l for l in lines if l)
+                if not txt:
+                    continue
+                if size >= 20:
+                    txt = "# " + txt
+                elif size >= 16:
+                    txt = "## " + txt
+                elif bold and len(txt) < 120:
+                    txt = f"**{txt}**"
+                paras.append((b["bbox"][1], txt))
+            paras.sort(key=lambda t: t[0])
+            pages.append("\n\n".join(t for _, t in paras))
+    out = sibling(src, ext=".md")
+    out.write_text("\n\n---\n\n".join(pages).strip() + "\n", encoding="utf-8")
+    return [out]
+
+
 # ---------------------------------------------------------------- DOCX
 def _docx_paragraph_html(p) -> str:
     parts = []
@@ -273,6 +309,73 @@ def docx_to_txt(src: str | Path) -> list[Path]:
     return [out]
 
 
+def _md_escape_cell(text: str) -> str:
+    return text.replace("|", "\\|").replace("\n", " ").strip()
+
+
+def _md_table(rows: list[list[str]]) -> str:
+    if not rows:
+        return ""
+    width = max(len(r) for r in rows)
+    rows = [[_md_escape_cell(c) for c in r] + [""] * (width - len(r)) for r in rows]
+    lines = ["| " + " | ".join(rows[0]) + " |", "|" + " --- |" * width]
+    lines += ["| " + " | ".join(r) + " |" for r in rows[1:]]
+    return "\n".join(lines)
+
+
+def _docx_paragraph_md(p) -> str:
+    parts = []
+    for r in p.runs:
+        t = r.text
+        if not t.strip():
+            parts.append(t)
+            continue
+        lead, core, trail = t[:len(t) - len(t.lstrip())], t.strip(), t[len(t.rstrip()):]
+        if r.bold and r.italic:
+            core = f"***{core}***"
+        elif r.bold:
+            core = f"**{core}**"
+        elif r.italic:
+            core = f"*{core}*"
+        parts.append(lead + core + trail)
+    body = "".join(parts).strip()
+    if not body:
+        return ""
+    style = (p.style.name or "").lower() if p.style is not None else ""
+    if style.startswith("heading"):
+        lvl = "".join(c for c in style if c.isdigit()) or "1"
+        return "#" * min(int(lvl), 6) + " " + p.text.strip()
+    if style == "title":
+        return "# " + p.text.strip()
+    if "list" in style:
+        return ("1. " if "number" in style else "- ") + body
+    return body
+
+
+def docx_to_md(src: str | Path) -> list[Path]:
+    from docx import Document
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    d = Document(src)
+    blocks: list[str] = []
+    for child in d.element.body.iterchildren():
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag == "p":
+            md = _docx_paragraph_md(Paragraph(child, d))
+            # consecutive list items stay in one block (no blank line between them)
+            if md and blocks and md[:2] in ("- ", "1.") and blocks[-1][:2] == md[:2]:
+                blocks[-1] += "\n" + md
+            elif md:
+                blocks.append(md)
+        elif tag == "tbl":
+            t = Table(child, d)
+            blocks.append(_md_table([[c.text for c in row.cells] for row in t.rows]))
+    out = sibling(src, ext=".md")
+    out.write_text("\n\n".join(b for b in blocks if b) + "\n", encoding="utf-8")
+    return [out]
+
+
 def _word_to_pdf(src: Path, out: Path) -> bool:
     """Use Microsoft Word (if installed) for a perfect-fidelity export."""
     if sys.platform != "win32":
@@ -294,34 +397,78 @@ def _word_to_pdf(src: Path, out: Path) -> bool:
 
 CSS = """
 * { font-family: sans-serif; }
-body { font-size: 11pt; line-height: 1.35; }
-h1 { font-size: 20pt; } h2 { font-size: 16pt; } h3 { font-size: 13pt; }
-p { margin: 0 0 6pt 0; }
-pre { font-family: monospace; font-size: 9.5pt; white-space: pre-wrap; }
-table { border-collapse: collapse; margin: 6pt 0; }
-td { border: 1px solid #888; padding: 3pt 5pt; font-size: 10pt; }
+body { font-size: 11pt; line-height: 1.5; color: #37352f; }
+h1 { font-size: 26pt; font-weight: bold; color: #111111; margin: 0 0 12pt 0; }
+h2 { font-size: 16pt; font-weight: bold; color: #111111; margin: 16pt 0 6pt 0; }
+h3 { font-size: 13pt; font-weight: bold; color: #111111; margin: 12pt 0 4pt 0; }
+p { margin: 0 0 8pt 0; }
+ul, ol { margin: 0 0 8pt 0; }
+li { margin: 2pt 0; }
+strong, b { font-weight: bold; }
+pre { font-family: monospace; font-size: 9.5pt; background-color: #f7f6f3; padding: 8pt; white-space: pre-wrap; margin: 0 0 8pt 0; }
+code { font-family: monospace; font-size: 9.5pt; color: #eb5757; background-color: #f1f0ee; }
+table { border-collapse: collapse; margin: 8pt 0; }
+th { border: 1px solid #e3e2e0; padding: 6pt 8pt; text-align: left; font-weight: bold; font-size: 10pt; }
+td { border: 1px solid #e3e2e0; padding: 6pt 8pt; text-align: left; font-size: 10pt; }
 """
 
 
-def html_to_pdf(body_html: str, out: Path) -> None:
-    story = fitz.Story(html=body_html, user_css=CSS)
+def html_to_pdf(body_html: str | list[str], out: Path, *, base: Path | None = None,
+                landscape: bool = False, extra_css: str = "", footer: str = "") -> None:
+    """A list of strings makes one section each, always starting on a fresh page (slides, sheets).
+    `base` is the folder relative images are loaded from. `footer`, if given, prints a grey
+    document title + page number along the bottom of every page (Notion-style)."""
+    chunks = body_html if isinstance(body_html, list) else [body_html]
+    archive = fitz.Archive(str(base)) if base else None
     writer = fitz.DocumentWriter(str(out))
-    mediabox = fitz.paper_rect("letter")
-    where = mediabox + (54, 54, -54, -54)
-    more = True
-    while more:
-        dev = writer.begin_page(mediabox)
-        more, _ = story.place(where)
-        story.draw(dev)
-        writer.end_page()
+    mediabox = fitz.paper_rect("letter-l" if landscape else "letter")
+    where = mediabox + (54, 54, -54, -72 if footer else -54)
+    for chunk in chunks:
+        story = fitz.Story(html=chunk, user_css=CSS + extra_css, archive=archive)
+        more = True
+        while more:
+            dev = writer.begin_page(mediabox)
+            more, _ = story.place(where)
+            story.draw(dev)
+            writer.end_page()
     writer.close()
+    if footer:
+        _stamp_footer(out, footer)
+
+
+def _stamp_footer(out: Path, title: str) -> None:
+    """Grey document title (left) + 'n / total' (right) in each page's bottom margin."""
+    doc = fitz.open(str(out))
+    try:
+        total = doc.page_count
+        if len(title) > 90:
+            title = title[:89] + "\u2026"
+        css = "*{font-family:sans-serif;font-size:8pt;color:#9b9a97;}"
+        for i, pg in enumerate(doc):
+            r = pg.rect
+            box = fitz.Rect(54, r.height - 48, r.width - 54, r.height - 28)
+            html_ft = ("<table style='width:100%'><tr>"
+                       f"<td style='text-align:left'>{html.escape(title)}</td>"
+                       f"<td style='text-align:right'>{i + 1} / {total}</td>"
+                       "</tr></table>")
+            try:
+                pg.insert_htmlbox(box, html_ft, css=css)
+            except Exception:
+                pass
+        doc.saveIncr()
+    finally:
+        doc.close()
 
 
 def docx_to_pdf(src: str | Path) -> list[Path]:
     src = Path(src)
     out = sibling(src, ext=".pdf")
     if not _word_to_pdf(src, out):
-        html_to_pdf(docx_to_html(src), out)
+        from . import documents
+        if documents.lo_available():
+            documents.lo_convert(src, "pdf", ".pdf", out)
+        else:
+            html_to_pdf(docx_to_html(src), out)
     return [out]
 
 
@@ -352,6 +499,31 @@ def text_to_docx(src: str | Path) -> list[Path]:
     return [out]
 
 
+CODE_LANGS = {".json": "json", ".xml": "xml", ".html": "html", ".htm": "html", ".log": ""}
+
+
+def text_to_md(src: str | Path) -> list[Path]:
+    """.txt is kept as it is, .csv becomes a table, other formats (.json, .xml, .html, .log)
+    go into a fenced code block so they stay readable."""
+    import csv
+    ext = Path(src).suffix.lower()
+    text = read_text(src)
+    if ext == ".csv":
+        try:
+            rows = list(csv.reader(io.StringIO(text), dialect=csv.Sniffer().sniff(text[:4096])))
+        except csv.Error:
+            rows = list(csv.reader(io.StringIO(text)))
+        text = _md_table([r for r in rows if r])
+    elif ext in CODE_LANGS:
+        fence = "```"
+        while fence in text:
+            fence += "`"
+        text = f"{fence}{CODE_LANGS[ext]}\n{text.strip(chr(10))}\n{fence}"
+    out = sibling(src, ext=".md")
+    out.write_text(text.rstrip("\n") + "\n", encoding="utf-8")
+    return [out]
+
+
 # ---------------------------------------------------------------- dispatch
 def targets_for(cat: str, src_ext: str) -> list[str]:
     src_ext = src_ext.lower().lstrip(".")
@@ -362,11 +534,26 @@ def targets_for(cat: str, src_ext: str) -> list[str]:
         if not HEIF_OK:
             t = [x for x in t if x != "HEIC"]
         return t
-    return {"pdf": PDF_TARGETS, "docx": DOCX_TARGETS, "text": TEXT_TARGETS}.get(cat, [])
+    if cat == "folder":
+        return [x for x in FOLDER_TARGETS if x != cur]
+    if cat in ("audio", "video"):
+        from . import media
+        return media.targets_for(cat, src_ext)
+    from . import documents
+    base = {"pdf": PDF_TARGETS, "docx": DOCX_TARGETS, "text": TEXT_TARGETS}.get(cat, [])
+    base = [x for x in base if x != cur]
+    return base + [t for t in documents.targets_for(cat, src_ext) if t not in base]
 
 
 def convert(src: str | Path, cat: str, target: str) -> list[Path]:
     target = target.upper()
+    if cat in ("audio", "video"):
+        from . import media
+        return media.convert_media(src, cat, target)
+    from . import documents
+    if cat in documents.CATEGORIES or (documents.handles(cat, target) and
+                                       target not in PDF_TARGETS + DOCX_TARGETS + TEXT_TARGETS):
+        return documents.convert_doc(src, cat, target)
     if cat == "image":
         return image_to(src, target)
     if cat == "pdf":
@@ -376,8 +563,57 @@ def convert(src: str | Path, cat: str, target: str) -> list[Path]:
             return pdf_to_txt(src)
         if target == "DOCX":
             return pdf_to_docx(src)
+        if target == "MD":
+            return pdf_to_md(src)
     if cat == "docx":
-        return docx_to_pdf(src) if target == "PDF" else docx_to_txt(src)
+        return {"PDF": docx_to_pdf, "MD": docx_to_md}.get(target, docx_to_txt)(src)
     if cat == "text":
-        return text_to_pdf(src) if target == "PDF" else text_to_docx(src)
+        return {"PDF": text_to_pdf, "MD": text_to_md}.get(target, text_to_docx)(src)
     raise ValueError(f"Can't convert {cat} to {target}")
+
+
+# ---------------------------------------------------------------- folders
+def _archive_out(src: Path, ext: str) -> Path:
+    """A free output name next to the folder (honours Settings -> Save results)."""
+    d = output_dir(src)
+    cand = d / (src.name + ext)
+    i = 1
+    while cand.exists():
+        cand = d / f"{src.name} ({i}){ext}"
+        i += 1
+    return cand
+
+
+def archive_folder(src: str | Path, target: str) -> list[Path]:
+    """Zip (or tar.gz) a folder into a single archive beside it. The folder itself
+    becomes the top-level entry, so it unpacks back into one tidy folder."""
+    src = Path(src)
+    if not src.is_dir():
+        raise UserError("That isn't a folder.")
+    target = target.upper().replace(".", "").replace("-", "")
+
+    if target == "ZIP":
+        out = _archive_out(src, ".zip")
+        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+            wrote = False
+            for p in sorted(src.rglob("*")):
+                if p.is_symlink():
+                    continue
+                rel = f"{src.name}/{p.relative_to(src).as_posix()}"
+                if p.is_file():
+                    z.write(p, rel)
+                    wrote = True
+                elif p.is_dir() and not any(p.iterdir()):
+                    z.writestr(rel + "/", "")  # keep empty folders
+            if not wrote and not z.namelist():
+                z.writestr(f"{src.name}/", "")
+        return [out]
+
+    if target in ("TARGZ", "TGZ"):
+        out = _archive_out(src, ".tar.gz")
+        with tarfile.open(out, "w:gz") as t:
+            t.add(src, arcname=src.name,
+                  filter=lambda ti: None if ti.issym() or ti.islnk() else ti)
+        return [out]
+
+    raise UserError(f"Can't archive a folder to {target}.")

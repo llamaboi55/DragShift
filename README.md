@@ -33,7 +33,7 @@ sudo apt install ./DragShift-linux-amd64.deb
 
 Open **DragShift** from the app menu. It sits in the panel's notification area, and you can turn on *Start at login* in Settings. It works in Thunar, Nautilus, Nemo, Caja, Dolphin and on the desktop, and it also adds **Open With → DragShift** to file right-click menus. It works with or without a compositor: when compositing is off (common on XFCE), the menu and windows are cut to their exact shape, so you won't see black boxes. Builds target Debian 12 or newer (Ubuntu 23.04+).
 
-> **Wayland:** Wayland doesn't let apps read the global Shift and mouse state, so the Shift + drag trigger only works in X11 sessions (XFCE is X11). On GNOME/KDE Wayland, use right-click → **Open With → DragShift**, or pick *"Ubuntu on Xorg"* / *"Plasma (X11)"* at the login screen.
+> **Wayland (tested on niri; Sway, Hyprland and KDE Plasma should work too):** the Shift + drag trigger works when DragShift runs from source on your distro's Qt (see [Wayland setup](#wayland-setup)). The prebuilt .deb bundles its own Qt, so on Wayland it only supports right-click → **Open With → DragShift**. GNOME has no layer-shell support, so Open With is the way to go there too, or pick *"Ubuntu on Xorg"* at the login screen.
 
 > **First launch on Windows:** SmartScreen may warn because the app isn't code-signed yet. Click **More info → Run anyway**.
 >
@@ -49,7 +49,7 @@ Open **DragShift** from the app menu. It sits in the panel's notification area, 
 
 ## How to use
 
-1. Start dragging a file (an image, PDF, Word or text file; desktop shortcuts to one work too) in File Explorer, Finder, your Linux file manager or on the desktop.
+1. Start dragging a file (an image, PDF, Word, text, audio or video file; desktop shortcuts to one work too) in File Explorer, Finder, your Linux file manager or on the desktop.
 2. Press **Shift**. The menu opens under your cursor.
 3. Drop the file on a slice. The result is saved **next to the original**, and the original is never changed.
 4. To switch between **Convert** and **Tools**, tap **Shift** again.
@@ -63,9 +63,20 @@ You can also right-click a file → **DragShift…**, use **Send to → DragShif
 | File | Convert to | Tools |
 |---|---|---|
 | Images (JPG, PNG, WEBP, HEIC, AVIF, TIFF, BMP, GIF, ICO) | Any of those, or PDF. Several images become one combined PDF | **Compress** (by quality or to a target size such as "under 500 KB", with a before/after preview, several files at once) · **Resize** · **Crop** (ratios, live pixel size, rotate) · **Edit** (Auto, light/colour, rotate, flip, B&W, hold to compare) · **Annotate** (arrows, boxes, numbered steps, text, marker) · **Redact** · **Add BG** · **Metadata** (camera, date, GPS location with a map link; remove location only or remove everything) |
-| PDF | JPG or PNG (one per page), DOCX, TXT | Compress · Split · Rotate · Merge (drop several) · **Protect** (AES-256 password) · **Extract images** · Metadata |
-| Word (.docx) | PDF (uses Microsoft Word if it's installed, otherwise a built-in renderer), TXT | — |
-| Text (.txt, .md, .csv…) | PDF, DOCX | — |
+| PDF | JPG or PNG (one per page), DOCX, TXT, Markdown, HTML, SVG | Compress · Split · Rotate · Merge (drop several) · **Protect** (AES-256 password) · **Extract images** · Metadata |
+| Word (.docx) | PDF (uses Microsoft Word if it's installed, then LibreOffice, otherwise a built-in renderer), TXT, HTML, Markdown (+ ODT, RTF, DOC with LibreOffice) | — |
+| Text (.txt, .log, .xml) | PDF, DOCX, Markdown, HTML | — |
+| Word-like (.odt, .rtf, .doc) | PDF, DOCX, TXT (+ ODT, RTF, DOC, HTML with LibreOffice) | — |
+| Excel and data (.xlsx, .csv, .tsv, .json; .xls and .ods with LibreOffice) | XLSX, CSV, TSV, JSON, HTML, Markdown, PDF, DOCX (+ ODS, XLS with LibreOffice). Multi-sheet files become one CSV/JSON per sheet | — |
+| PowerPoint (.pptx; .ppt and .odp with LibreOffice) | PDF, PNG or JPG (one per slide), TXT (+ ODP, PPT with LibreOffice). PDF is an exact copy with LibreOffice, a text-and-pictures outline without it | — |
+| Markdown, HTML | PDF, DOCX, TXT, and HTML ⇄ Markdown | — |
+| E-books (.epub, .mobi, .fb2), .xps, .cbz | PDF (TXT and HTML for e-books) | — |
+| SVG | PNG, JPG, WEBP, TIFF, PDF | — |
+| Archives (.zip, .tar, .tar.gz, .tar.xz, .tar.bz2) | any other of those formats | — |
+| Subtitles (.srt, .vtt, .ass) | SRT, VTT, ASS | — |
+| Audio (MP3, WAV, FLAC, M4A, AAC, OGG, OPUS, WMA, AIFF, AC3, APE, MKA… anything FFmpeg can read) | MP3, WAV, FLAC, M4A, AAC, OGG, OPUS, WMA, AIFF | **Compress** (by bitrate or to a target size, mono option) · **Trim** (waveform, exact cut) · **Edit** (volume, even out loudness, speed, fades, mono) · **Merge** (drop several) · **Metadata** (remove tags) |
+| Video (MP4, MKV, WEBM, MOV, AVI, WMV, FLV, M4V, MPG, 3GP, TS, VOB… anything FFmpeg can read) | MP4, MKV (instant lossless remux when possible), WEBM, MOV, AVI, GIF, or just the soundtrack as MP3, M4A, WAV or FLAC | **Compress** (quality, resolution cap, target size, optional H.265, with a size estimate) · **Trim** (start and end previews; frame-exact or instant keyframe cut) · **Edit** (rotate, mirror, flip, speed, resolution, volume, remove sound) · **Merge** (different sizes and frame rates are fine) · **Metadata** (remove tags and GPS location) |
+
 
 **Settings** (tray menu): trigger key (Shift, Ctrl or Alt), where results go (next to the original or a `DragShift` subfolder), JPG/WebP quality, PDF → image resolution, and start at login.
 
@@ -101,7 +112,37 @@ pip install -r requirements.txt
 python -m dragshift
 ```
 
+The full list of formats is in [docs/FORMATS.md](docs/FORMATS.md). Audio, video and subtitles use FFmpeg; slides, `.doc`, `.xls` and OpenDocument/RTF output use LibreOffice when it is installed (everything else works without it).
+
+Audio and video conversion uses FFmpeg. `pip install -r requirements.txt` brings a copy via `imageio-ffmpeg`; otherwise DragShift uses `ffmpeg` from your PATH, or the file named in the `DRAGSHIFT_FFMPEG` environment variable. Without FFmpeg, audio and video files simply offer no conversions.
+
 On Linux, PySide6 also needs the Qt XCB libraries: `sudo apt install libxcb-cursor0 libxkbcommon-x11-0`.
+
+### Wayland setup
+
+Wayland doesn't let apps read the global mouse and keyboard state, position their own windows, or ask where the cursor is. DragShift works around each of these:
+
+- **Trigger:** the button and Shift state are read from the kernel input devices with `evdev`. DragShift only reads them, never grabs them, and keeps nothing but up/down flags. Your user must be in the `input` group: `sudo usermod -aG input $USER`, then log in again. If lingering is enabled for your user (`loginctl show-user $USER -p Linger`), reboot instead, because a lingering user manager keeps the old groups.
+- **Menu and notifications:** these are [wlr-layer-shell](https://wayland.app/protocols/wlr-layer-shell-unstable-v1) surfaces, created through LayerShellQt. When you press Shift, invisible full-screen surfaces appear on every monitor, and the drag entering one of them tells DragShift where the cursor is.
+- **Glass:** the screen behind the menu is captured with `grim`.
+
+LayerShellQt is linked against your system Qt, so PySide6 must come from your distro too (not pip). For example, on Arch:
+
+```bash
+sudo pacman -S pyside6 layer-shell-qt python-evdev python-pillow python-pillow-heif python-pymupdf python-numpy python-docx grim
+python -m dragshift
+```
+
+On niri, add this rule so the tool windows float instead of tiling (the menu and notifications don't need it):
+
+```kdl
+window-rule {
+    match app-id="^dragshift$"
+    open-floating true
+}
+```
+
+Tested on niri. On compositors without `wlr-screencopy` (e.g. KDE), the glass falls back to a plain tint.
 
 Tests: `python -m pytest -q`. Logs are written to `%LOCALAPPDATA%\DragShift\log.txt` on Windows, `~/Library/Logs/DragShift/log.txt` on Mac and `~/.local/share/DragShift/log.txt` on Linux.
 

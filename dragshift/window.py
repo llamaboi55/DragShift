@@ -13,6 +13,14 @@ from . import glass
 IS_WIN = sys.platform == "win32"
 
 
+def WAYLAND() -> bool:
+    """The compositor places our windows and won't say where, so there's nothing to capture."""
+    if not sys.platform.startswith("linux"):
+        return False
+    from . import platform_wayland
+    return platform_wayland.is_wayland()
+
+
 class GlassWindow(QWidget):
     """Top-level glass window with its own title bar. Put content in `self.body`."""
 
@@ -68,7 +76,8 @@ class GlassWindow(QWidget):
         self.resize(min(self.width(), scr.width() - 40), min(self.height(), scr.height() - 40))
         self.move(scr.center() - self.rect().center())
         self._placed = True
-        self.liquid.capture_at(self.frameGeometry())
+        if not WAYLAND():
+            self.liquid.capture_at(self.frameGeometry())
         self.show()
         if sys.platform == "darwin":
             from . import platform_mac
@@ -82,7 +91,8 @@ class GlassWindow(QWidget):
             scr = self.screen().availableGeometry()
             self.move(scr.center() - self.rect().center())
             self._placed = True
-            self.liquid.capture_at(self.frameGeometry())
+            if not WAYLAND():
+                self.liquid.capture_at(self.frameGeometry())
         self.liquid.excluded = glass.exclude_from_capture(int(self.winId()))
 
     def moveEvent(self, e):

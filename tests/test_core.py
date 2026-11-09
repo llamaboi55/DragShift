@@ -99,7 +99,7 @@ def test_paths(tmp_path):
     f = tmp_path / "a.jpg"
     f.write_bytes(b"x")
     assert sibling(f, ext=".jpg").name == "a (1).jpg"
-    assert category("x.HEIC") == "image" and category("x.pdf") == "pdf" and category("x.zip") is None
+    assert category("x.HEIC") == "image" and category("x.pdf") == "pdf" and category("x.exe") is None
 
 
 @pytest.mark.skipif(__import__("sys").platform != "win32", reason="Windows shortcuts")
@@ -113,3 +113,84 @@ def test_shortcut_resolves_to_target(img, tmp_path):
     out = resolve_shortcuts([str(lnk)])
     assert Path(out[0]) == img and category(out[0]) == "image"
     assert resolve_shortcuts([str(img)]) == [str(img)]
+
+
+def test_archive_folder(tmp_path):
+    from dragshift.util import category
+    import zipfile, tarfile
+    folder = tmp_path / "My Project"
+    folder.mkdir()
+    (folder / "readme.txt").write_text("hello world " * 100)
+    (folder / "sub").mkdir()
+    (folder / "sub" / "data.csv").write_text("a,b,c\n1,2,3\n")
+    (folder / "empty").mkdir()
+
+    assert category(folder) == "folder"
+    assert convert.targets_for("folder", "") == ["ZIP", "TAR.GZ"]
+
+    zf = convert.archive_folder(folder, "ZIP")[0]
+    assert zf.exists() and zf.suffix == ".zip"
+    with zipfile.ZipFile(zf) as z:
+        names = z.namelist()
+    assert "My Project/readme.txt" in names
+    assert "My Project/sub/data.csv" in names
+
+    tf = convert.archive_folder(folder, "TAR.GZ")[0]
+    assert tf.exists() and tf.name.endswith(".tar.gz")
+    with tarfile.open(tf) as t:
+        tnames = t.getnames()
+    assert "My Project/readme.txt" in tnames
+
+    # second ZIP must not overwrite the first
+    zf2 = convert.archive_folder(folder, "ZIP")[0]
+    assert zf2 != zf and zf2.exists()
+
+
+def test_markdown_targets():
+    assert "MD" in convert.targets_for("text", ".txt")
+    assert "MD" not in convert.targets_for("text", ".md")
+    assert "MD" in convert.targets_for("pdf", ".pdf") and "MD" in convert.targets_for("docx", ".docx")
+
+
+def test_text_to_md(tmp_path):
+    t = tmp_path / "notes.txt"
+    t.write_text("# already\nplain line\n")
+    md = convert.convert(t, "text", "MD")[0]
+    assert md.suffix == ".md" and md.read_text() == "# already\nplain line\n"
+
+    c = tmp_path / "data.csv"
+    c.write_text("name,note\nann,a|b\nbob,\n")
+    lines = convert.convert(c, "text", "MD")[0].read_text().splitlines()
+    assert lines[0] == "| name | note |" and lines[1] == "| --- | --- |"
+    assert lines[2] == "| ann | a\\|b |"
+
+    j = tmp_path / "x.json"
+    j.write_text('{"a": 1}\n')
+    assert convert.convert(j, "text", "MD")[0].read_text() == '```json\n{"a": 1}\n```\n'
+
+
+def test_docx_to_md(tmp_path):
+    from docx import Document
+    d = Document()
+    d.add_heading("Title", level=1)
+    p = d.add_paragraph("Plain ")
+    p.add_run("bold").bold = True
+    p.add_run(" and ")
+    p.add_run("italic").italic = True
+    d.add_paragraph("one", style="List Bullet")
+    d.add_paragraph("two", style="List Bullet")
+    t = d.add_table(rows=2, cols=2)
+    for i, v in enumerate(("a", "b", "c", "d")):
+        t.cell(i // 2, i % 2).text = v
+    src = tmp_path / "doc.docx"
+    d.save(src)
+    md = convert.convert(src, "docx", "MD")[0].read_text()
+    assert md.startswith("# Title\n\nPlain **bold** and *italic*\n\n- one\n- two\n\n")
+    assert "| a | b |\n| --- | --- |\n| c | d |" in md
+
+
+def test_pdf_to_md(pdf):
+    md = convert.convert(pdf, "pdf", "MD")[0].read_text()
+    pages = md.split("\n---\n")
+    assert len(pages) == 2
+    assert "# Hello page 1" in pages[0] and "Body text line for extraction." in pages[0]
